@@ -817,10 +817,183 @@ system:
 Every record is content-addressed with SHA-256 and persisted to
 SQLite before the emitting agent continues.
 
+## Application service layer (Milestone 5-A)
+
+A reusable service layer sits above the domain, engine and
+persistence layers. Transports (CLI, REST API, any future
+dashboard) call these services; they never reach into the
+engine directly.
+
+```
+src/application/
+  workflow-service.ts   createRun, executeRun, executeGraph
+  run-service.ts        getRun, listRuns, getEvents, getEvidence,
+                        getMetrics, getTasks, getSpans, getCounters
+  approval-service.ts   submit, approve, reject, listPending
+  evaluation-service.ts evaluateRun (projects stored evidence)
+```
+
+There is **no second workflow engine**. `WorkflowService`
+delegates to the existing `AIWorkflow` / `Orchestrator` and adds
+only tracing plus a transport-safe summary. Likewise
+`EvaluationService` builds an `EvaluationContext` from stored
+evidence and delegates to the Milestone 4 evaluator.
+
+### Run scoping: workflow runs vs member runs
+
+`AIWorkflow` creates one orchestrator run per phase (planner,
+main, repairs) and scopes its own evidence under a separate
+`workflowId` that is not itself a persisted run row. To make a
+workflow addressable as one resource, `WorkflowService` writes a
+run row for the workflow id and records the member run ids in its
+metadata. `RunService.scopeRunIds()` reads that metadata, and
+`getEvents` / `getEvidence` / `getTasks` / `getMetrics` aggregate
+across the scope, re-sorted by the global event sequence.
+
+Without this, `GET /api/runs/:id` would 404 on the id that
+`POST /api/workflows` returned.
+
+## Observability (Milestone 5-A)
+
+Local, in-process tracing and metrics. There is **no
+OpenTelemetry SDK dependency, no exporter and no network
+endpoint** — only OTel-compatible naming and structure.
+
+```
+src/observability/
+  spans.ts           Span / SpanContext, startSpan, endSpan
+  tracer.ts          LocalTracer: start, end, withSpan, finalizeRun
+  metrics.ts         MetricRegistry + METRIC_NAMES
+  instrumentation.ts instrument(): wires the tracer to existing signals
+src/persistence/
+  observability-repository.ts   spans + run_metrics tables
+  migrations/0002_observability.sql
+```
+
+### Instrumentation adds no engine hooks
+
+`instrument()` observes only what the system already emits: the
+synchronous event bus (`task.retried`) and the append-only
+evidence log (`agent.start`/`agent.end`, `model.call`,
+`tool.call`/`tool.result`, `verification`, `repair.started`), plus
+the tool registry's policy audit hook. No orchestrator or agent
+code is modified, so Milestones 1-4 behaviour is untouched.
+
+Note that agent and workflow lifecycle arrive as **evidence
+kinds**, not typed events — the bus only carries the 12 M1 event
+types. The instrumentation projects them from
+`evidence.recorded`.
+
+### Spans
+
+Mirrors the OTel shape: `spanId`, `parentSpanId`, `name`, `kind`,
+`status`, start/end timestamps, `durationMs`, and free-form
+attributes. Token usage is mirrored into
+`gen_ai.usage.*` attributes so an exporter reading attributes
+alone still sees the numbers.
+
+Finished spans are persisted **immediately**, under the run id
+they were started with. This matters because a workflow's agent
+and tool spans belong to member runs, not to the workflow id —
+buffering until the workflow finished would drop them.
+`finalizeRun(runId)` then derives and persists that run's metrics.
+
+### Metrics
+
+`MetricRegistry.fromSpans()` computes the standard set from the
+spans, so numbers always agree with the trace:
+
+| Metric | Source |
+| --- | --- |
+| `workflow.run.duration_ms` / `workflow.run.count` | the workflow span |
+| `agent.duration_ms` | summed `agent.execute` spans |
+| `tool.call.count` / `tool.error.count` | `tool.call` spans |
+| `error.count` | any span with `status = error` |
+| `retry.count` | `task.retry` spans |
+| `repair.count` | `workflow.repair` spans |
+| `policy.denial.count` | registry audit refusals |
+| `gen_ai.usage.{input,output,total}_tokens` | spans reporting usage |
+
+A `task.retry` span counts as exactly one retry; its
+`retry.count` attribute is deliberately **not** added again, which
+would double count.
+
+### Token availability
+
+Token metrics are nullable throughout. A dimension is reported
+only if at least one span supplied it, so "the provider reported
+no usage" stays `null` and is never flattened to `0`. The API
+exposes `tokenUsageAvailable` alongside the three nullable fields.
+The deterministic provider always reports usage, so offline runs
+produce real numbers.
+
+## REST API (Milestone 5-A)
+
+```
+src/api/
+  server.ts        createApiApp, startApiServer (Node http via Hono)
+  schemas.ts       Zod request/response contracts
+  routes/routes.ts transport-only handlers
+  routes/responses.ts  ok / fail helpers
+  main.ts          entry point with graceful shutdown
+scripts/
+  api-smoke-test.ts  end-to-end smoke test on an ephemeral port
+```
+
+Endpoints:
+
+| Method | Path | Service call |
+| --- | --- | --- |
+| GET | `/health` | health + determinism flag |
+| GET | `/api/runs` | `RunService.listRuns` |
+| GET | `/api/runs/:id` | `RunService.getRun` / `getTasks` |
+| GET | `/api/runs/:id/events` | `RunService.getEvents` |
+| GET | `/api/runs/:id/evidence` | `RunService.getEvidence` |
+| GET | `/api/runs/:id/evaluation` | `EvaluationService.evaluateRun` |
+| GET | `/api/runs/:id/metrics` | `RunService.getMetrics` |
+| POST | `/api/workflows` | `WorkflowService.executeRun` |
+| POST | `/api/workflows/:id/approve` | `ApprovalService.approve` |
+| POST | `/api/workflows/:id/reject` | `ApprovalService.reject` |
+
+Handlers are transport-only: parse with Zod, call one service
+method, shape the response. No orchestration, persistence or
+policy logic lives in a route.
+
+### Local-only posture
+
+- Binds to `127.0.0.1` by default; `API_HOST` overrides it.
+- CORS is **disabled** by default. Enabling it requires an
+  explicit origin allowlist, and a `*` entry throws at startup.
+- No authentication is configured, because the server is local
+  and single-user. Adding it would require a secret store, which
+  would break the zero-cost rule.
+- No secret is read, required or returned. `maxRepairCycles` is
+  capped at 1 so an HTTP request can never create a loop.
+- Errors always use the structured `{ error: { code, message,
+  details? } }` shape; domain `DomainError` codes are mapped to
+  sensible statuses instead of leaking stack traces.
+
+### Graceful shutdown
+
+`src/api/main.ts` handles SIGINT/SIGTERM, closes the HTTP server
+(releasing the port) and then closes the database, so no
+migration lock or WAL file is left behind.
+
+## Local-only execution and deterministic mode
+
+The default `DeterministicLLMProvider` keeps the entire stack
+offline. The API reports this explicitly via
+`health.deterministic`. A workflow created over HTTP uses the
+same scripted responses as the CLI demo, so identical inputs
+produce identical plans, findings and verdicts — the API is
+reproducible, not just functional.
+
+`GET /health` and every read endpoint work without any
+credential, and the smoke test requires none.
+
 ## Out of scope (deliberately)
 
-React dashboard, GitHub
-automation, OpenTelemetry and cloud deployment belong
-to later milestones. Autonomous destructive shell
-execution and Kubernetes infrastructure are likewise
-deliberately excluded.
+A React dashboard, GitHub automation, WebSockets, cloud
+deployment and Kubernetes belong to later milestones.
+Autonomous destructive shell execution is likewise deliberately
+excluded.

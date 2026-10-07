@@ -10,7 +10,12 @@ outputs, a planner, specialist agents (researcher,
 builder, verifier), structured tool calling, and a
 bounded repair cycle. Milestone 3 added three AI Engineer
 capabilities: local RAG / knowledge retrieval, real MCP
-integration, and reusable agent Skills.
+integration, and reusable agent Skills. Milestone 4 added the
+reliability and safety layer: a deterministic evaluation
+engine, a capability policy engine, prompt-injection defenses,
+human approval, and evidence-backed quality scoring.
+Milestone 5-A adds the production-style platform: an
+application service layer, local observability, and a REST API.
 
 - **Completely free to develop, test and run** — no
   API keys, no paid AI APIs, no cloud services. The
@@ -63,6 +68,19 @@ integration, and reusable agent Skills.
   untrusted DATA and classifies them SAFE / SUSPICIOUS /
   BLOCKED. It is a first-line defense, **not** a guarantee
   against all attacks.
+- **Service-layered (M5-A)** — an application service layer
+  (`createRun`, `executeRun`, `getRun`, `getEvents`,
+  `getEvidence`, `getEvaluation`, `getMetrics`, `approve`,
+  `reject`) sits above the engine. The CLI and REST API both use
+  it, and no transport duplicates orchestration.
+- **Observable locally (M5-A)** — in-process spans and metrics
+  using OpenTelemetry-compatible naming, persisted through the
+  existing SQLite layer. No OTel SDK, no exporter, no network
+  endpoint. Unavailable token usage is reported as `null`, never
+  invented as `0`.
+- **Local REST API (M5-A)** — a loopback-bound JSON API over the
+  services, with Zod request validation, structured errors, CORS
+  off by default, and graceful shutdown. Fully offline.
 
 ## Requirements
 
@@ -73,14 +91,18 @@ integration, and reusable agent Skills.
 
 ```sh
 pnpm install
-pnpm test        # vitest — 356 tests (90 M1 + 107 M2 + 73 M3 + 86 M4)
+pnpm test        # vitest — 468 tests
 pnpm typecheck   # tsc --noEmit
 pnpm demo        # M1: research -> implementation -> verification
 pnpm demo:ai     # M2: planner -> researcher -> builder -> verifier (with repair)
-pnpm demo --safety  # M4: evaluation, policy, approval, injection defense
+pnpm demo:safety # M4: evaluation, policy, approval, injection defense
+pnpm api         # M5-A: local REST API on http://127.0.0.1:4317
+pnpm smoke:api   # M5-A: end-to-end API smoke test (offline)
 pnpm build       # compile to dist/ (plus asset copy)
 pnpm verify      # typecheck + test + demo
 ```
+
+`API_HOST` / `API_PORT` / `API_DB` override the API defaults.
 
 ## Demo
 
@@ -166,15 +188,46 @@ src/
   approval/     M4: approval requests, decisions, manager
   tools/        Tool interface, schema validation, registry, builtins,
                 policy gate (enforced inside the registry)
+  observability/ M5-A: spans, tracer, metrics, instrumentation
+  application/  M5-A: workflow, run, approval, evaluation services
+  api/          M5-A: REST server, Zod schemas, routes, entry point
   index.ts      composition root
   cli.ts        demo CLI (graph demo + AI demo + safety demo)
 skills/           Version-controlled Markdown skills
   repository-analysis/SKILL.md
   safe-code-change/SKILL.md
   verification/SKILL.md
-tests/            356 unit + integration tests
+tests/            468 unit + integration tests
 docs/             architecture.md
 ```
+
+## REST API
+
+```sh
+pnpm api                                  # 127.0.0.1:4317
+curl -s localhost:4317/health
+
+curl -s -X POST localhost:4317/api/workflows \
+  -H 'content-type: application/json' \
+  -d '{"objective":"Add structured output validation"}'
+```
+
+```
+GET  /health
+GET  /api/runs
+GET  /api/runs/:id
+GET  /api/runs/:id/events
+GET  /api/runs/:id/evidence
+GET  /api/runs/:id/evaluation
+GET  /api/runs/:id/metrics
+POST /api/workflows
+POST /api/workflows/:id/approve
+POST /api/workflows/:id/reject
+```
+
+Loopback-bound by default, CORS disabled unless an explicit
+allowlist is configured, no authentication (local, single-user),
+and no secret is read or returned.
 
 See [docs/architecture.md](docs/architecture.md) for
 module boundaries, dependency inversion, the LLM
@@ -182,8 +235,9 @@ provider layer, structured outputs, agent roles, the
 tool execution flow, the repair loop, provider
 neutrality, RAG architecture, MCP architecture, skills
 architecture, the evaluation/policy/approval architecture,
-trust boundaries, and the documented limits of the
-prompt-injection detector.
+trust boundaries, the application service layer,
+observability, the API architecture, and the documented
+limits of the prompt-injection detector.
 
 ## License
 

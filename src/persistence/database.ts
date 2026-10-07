@@ -18,6 +18,14 @@ export const MIGRATIONS: readonly Migration[] = [
       'utf8',
     ),
   },
+  {
+    version: 2,
+    name: '0002_observability',
+    sql: readFileSync(
+      fileURLToPath(new URL('./migrations/0002_observability.sql', import.meta.url)),
+      'utf8',
+    ),
+  },
 ];
 
 /**

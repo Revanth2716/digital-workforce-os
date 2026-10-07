@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AppDatabase } from '../src/persistence/database.js';
+import { AppDatabase, MIGRATIONS } from '../src/persistence/database.js';
 import { RunRepository } from '../src/persistence/run-repository.js';
 import { TaskRepository } from '../src/persistence/task-repository.js';
 import { EventRepository } from '../src/persistence/event-repository.js';
@@ -48,7 +48,12 @@ describe('AppDatabase', () => {
     const rows = db.db
       .prepare('SELECT version, name FROM schema_migrations')
       .all() as Array<{ version: number; name: string }>;
-    expect(rows).toEqual([{ version: 1, name: '0001_init' }]);
+    // Asserted against the declared migration list rather than a
+    // hard-coded count, so adding a migration does not break this.
+    expect(rows).toEqual(MIGRATIONS.map((m) => ({ version: m.version, name: m.name })));
+    // Versions are unique and applied in ascending order.
+    expect(rows.map((row) => row.version)).toEqual([...rows.map((row) => row.version)].sort((a, b) => a - b));
+    expect(new Set(rows.map((row) => row.version)).size).toBe(rows.length);
     db.close();
   });
 
@@ -59,11 +64,18 @@ describe('AppDatabase', () => {
     const first = new AppDatabase(path);
     first.close();
     const second = new AppDatabase(path);
-    const rows = second.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as {
-      n: number;
-    };
-    expect(rows.n).toBe(1);
-    second.close();
+    try {
+      const rows = second.db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as {
+        n: number;
+      };
+      // Reopening applies nothing new: one row per declared
+      // migration, no duplicates.
+      expect(rows.n).toBe(MIGRATIONS.length);
+    } finally {
+      // Closed even on failure, otherwise the file stays locked
+      // and the temp directory cannot be removed.
+      second.close();
+    }
   });
 });
 

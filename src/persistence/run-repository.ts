@@ -64,6 +64,18 @@ export class RunRepository {
     this.db.prepare(`UPDATE runs SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   }
 
+  /**
+   * Replace the run's metadata JSON.
+   *
+   * Additive to Milestone 1: `updateStatus` intentionally only
+   * touches lifecycle columns, so callers that need to record
+   * structural metadata (such as a workflow's member run ids) use
+   * this instead.
+   */
+  setMetadata(id: string, metadata: string): void {
+    this.db.prepare('UPDATE runs SET metadata = ? WHERE id = ?').run(metadata, id);
+  }
+
   get(id: string): RunRow | null {
     const row = this.db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as
       | {

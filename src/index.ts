@@ -47,6 +47,10 @@ export * from './policy/index.js';
 export * from './security/index.js';
 export * from './approval/index.js';
 export * from './tools/policy-gate.js';
+export * from './observability/index.js';
+export * from './application/index.js';
+export * from './persistence/observability-repository.js';
+export * from './api/index.js';
 
 import { AppDatabase } from './persistence/database.js';
 import { RunRepository } from './persistence/run-repository.js';
@@ -78,6 +82,14 @@ import { DefaultPolicyGate } from './tools/policy-gate.js';
 import { ApprovalManager } from './approval/approval-manager.js';
 import type { ApprovalHandler } from './approval/approval-manager.js';
 import type { PolicyEngine } from './policy/policy-engine.js';
+import { ObservabilityRepository } from './persistence/observability-repository.js';
+import { LocalTracer } from './observability/tracer.js';
+import { instrument } from './observability/instrumentation.js';
+import type { InstrumentationHandle } from './observability/instrumentation.js';
+import { RunService } from './application/run-service.js';
+import { WorkflowService } from './application/workflow-service.js';
+import { ApprovalService } from './application/approval-service.js';
+import { EvaluationService } from './application/evaluation-service.js';
 
 /** Configuration for the default composition. */
 export interface CompositionConfig {
@@ -159,6 +171,17 @@ export interface Composition {
   readonly runs: RunRepository;
   readonly tasks: TaskRepository;
   readonly events: EventRepository;
+  /** Milestone 5-A: local observability. */
+  readonly observability: ObservabilityRepository;
+  /** Milestone 5-A: in-process tracer. */
+  readonly tracer: LocalTracer;
+  /** Milestone 5-A: instrumentation handle (dispose to detach). */
+  readonly instrumentation: InstrumentationHandle;
+  /** Milestone 5-A: read-side application services. */
+  readonly runService: RunService;
+  readonly workflowService: WorkflowService;
+  readonly approvalService: ApprovalService;
+  readonly evaluationService: EvaluationService;
   close(): void;
 }
 
@@ -265,6 +288,36 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     },
   });
 
+  // ---- Milestone 5-A: observability + application services ----
+  // Instrumentation only observes signals the engine already emits
+  // (typed events and the evidence log), so no orchestration logic
+  // is modified or duplicated.
+  const observability = new ObservabilityRepository(db.db);
+  const tracer = new LocalTracer(clock, observability);
+  const instrumentation = instrument({
+    bus,
+    tracer,
+    clock,
+    tools,
+    provider: llm.name,
+    model: llm.model.name,
+  });
+
+  const runService = new RunService({ runs, tasks, events, observability });
+  const workflowService = new WorkflowService({
+    ai,
+    orchestrator,
+    runs,
+    ids,
+    tracer,
+    maxRepairCycles: config.maxRepairCycles,
+  });
+  const approvalService = new ApprovalService({
+    approvals: config.approval ?? new ApprovalManager(config.approvalHandler),
+    clock,
+  });
+  const evaluationService = new EvaluationService({ runService });
+
   return {
     db,
     bus,
@@ -280,6 +333,16 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     runs,
     tasks,
     events,
-    close: () => db.close(),
+    observability,
+    tracer,
+    instrumentation,
+    runService,
+    workflowService,
+    approvalService,
+    evaluationService,
+    close: () => {
+      instrumentation.dispose();
+      db.close();
+    },
   };
 }
