@@ -21,6 +21,15 @@ export interface OrchestratorOptions {
   readonly failFast?: boolean;
   /** Base delay for exponential retry backoff. Defaults to 100ms. */
   readonly retryBaseDelayMs?: number;
+  /**
+   * Optional hook to enrich the agent context per task
+   * (Milestone 2 AI layer: objective, previous results,
+   * available tools, model metadata). Receives the base context
+   * and the task about to run; returns the context handed to
+   * the agent. Defaults to the identity function, which leaves
+   * Milestone 1 behaviour untouched.
+   */
+  readonly agentContextFactory?: (base: AgentContext, task: TaskDefinition) => AgentContext;
 }
 
 /** Final state of a single task. */
@@ -278,7 +287,7 @@ export class Orchestrator {
           }),
         );
 
-        const context: AgentContext = {
+        const baseContext: AgentContext = {
           runId,
           taskId: task.id,
           attempt,
@@ -287,6 +296,9 @@ export class Orchestrator {
           tools: this.deps.tools,
           evidence: this.deps.evidence,
         };
+        const context: AgentContext = this.deps.options?.agentContextFactory
+          ? this.deps.options.agentContextFactory(baseContext, task)
+          : baseContext;
 
         try {
           const agent = this.deps.agents.get(task.agent);

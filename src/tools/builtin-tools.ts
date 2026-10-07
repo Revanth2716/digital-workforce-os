@@ -20,6 +20,7 @@ export class CalculatorTool implements Tool {
   readonly name = 'calculator';
   readonly description = 'Deterministic arithmetic: add, subtract, multiply, divide';
   readonly inputSchema = calculatorSchema;
+  readonly readOnly = true;
 
   async execute(args: JsonValue, _context: ToolContext): Promise<JsonValue> {
     const { operation, a, b } = args as { operation: string; a: number; b: number };
@@ -61,6 +62,7 @@ export class WordCountTool implements Tool {
   readonly name = 'word_count';
   readonly description = 'Counts words, characters and lines in the given text';
   readonly inputSchema = wordCountSchema;
+  readonly readOnly = true;
 
   async execute(args: JsonValue, _context: ToolContext): Promise<JsonValue> {
     const { text } = args as { text: string };

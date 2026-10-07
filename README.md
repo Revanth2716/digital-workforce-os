@@ -1,18 +1,39 @@
 # Digital Workforce OS
 
-Governed multi-agent AI workflow system. Milestone 1 delivers the
-deterministic, fully local foundation: task graphs, an orchestrator,
-agent and tool abstractions, SQLite persistence, and an append-only
-event/evidence log.
+Guided multi-agent AI workflow system. Milestone 1
+delivered the deterministic, fully local foundation: task
+graphs, an orchestrator, agent and tool abstractions,
+SQLite persistence, and an append-only event/evidence
+log. Milestone 2 turned it into a real AI-agent execution
+layer: an LLM provider abstraction, Zod structured
+outputs, a planner, specialist agents (researcher,
+builder, verifier), structured tool calling, and a
+bounded repair cycle.
 
-- **Completely free to develop, test and run** — no API keys, no
-  paid AI APIs, no cloud services. Milestone 1 executes entirely
-  with the local deterministic provider.
-- **Deterministic** — seeded provider, injectable clocks and
-  sequential IDs make every test and demo reproducible.
-- **Auditable** — every lifecycle transition is an event persisted
-  to an append-only SQLite table; evidence records are
-  content-addressed with SHA-256.
+- **Completely free to develop, test and run** — no
+  API keys, no paid AI APIs, no cloud services. The
+  deterministic provider is the default and runs the
+  full AI workflow offline; an optional
+  OpenAI-compatible provider can be configured
+  explicitly.
+- **Provider-neutral** — agents depend on the
+  `LLMProvider` interface (text + structured
+  generation, model metadata, usage, timeouts), so
+  the model backend is swappable without touching the
+  orchestrator.
+- **Structured and verified** — every model-generated
+  output is validated against Zod schemas at three
+  layers (provider, agent, workflow); a verifier
+  agent can fail work and trigger exactly one
+  automatic repair cycle.
+- **Deterministic** — seeded provider, injectable
+  clocks and sequential IDs make every test and demo
+  reproducible.
+- **Auditable** — every lifecycle transition is an
+  event persisted to an append-only SQLite table;
+  evidence records (agent lifecycle, model calls,
+  structured validation, tool calls, verification,
+  repairs) are content-addressed with SHA-256.
 
 ## Requirements
 
@@ -23,9 +44,10 @@ event/evidence log.
 
 ```sh
 pnpm install
-pnpm test        # vitest — 90 tests
+pnpm test        # vitest — 197 tests (90 M1 + 107 M2)
 pnpm typecheck   # tsc --noEmit
-pnpm demo        # research -> implementation -> verification workflow
+pnpm demo        # M1: research -> implementation -> verification
+pnpm demo:ai     # M2: planner -> researcher -> builder -> verifier (with repair)
 pnpm build       # compile to dist/ (plus asset copy)
 pnpm verify      # typecheck + test + demo
 ```
@@ -34,6 +56,7 @@ pnpm verify      # typecheck + test + demo
 
 ```sh
 pnpm demo                       # default: data/demo.db, concurrency 2
+pnpm demo --ai                  # AI workflow demo (fully offline)
 pnpm demo --verbose             # print every persisted event
 pnpm demo --json                # machine-readable summary
 pnpm demo --db path/to.db       # custom database
@@ -41,16 +64,32 @@ pnpm demo --concurrency 4       # parallel task execution
 pnpm demo --continue            # keep going after task failures
 ```
 
-The demo builds the canonical sample workflow:
+The default demo builds the canonical Milestone 1
+workflow:
 
 ```
 research -> implementation -> verification
 ```
 
-executes it end-to-end with the deterministic provider (including
-tool calls through the registered `word_count` and `calculator`
-tools), prints a readable summary, and reads every run, task and
-event back from SQLite to prove persistence.
+The AI demo (`--ai`) runs the Milestone 2 workflow with
+the deterministic provider — zero network access:
+
+```
+Objective -> Planner -> Researcher -> Builder -> Verifier
+                                (one automatic repair cycle on failure)
+
+Planner       ✓
+Researcher    ✓
+Builder       ✓
+Verifier      ⚠   <- verifier rejects the first attempt
+Repair        ✓   <- builder receives the failure report and repairs
+Verifier      ✓   <- second verification passes
+Final         SUCCESS
+```
+
+Both demos execute end-to-end, print a readable summary,
+and read every run, task and event back from SQLite to
+prove persistence.
 
 ## Project layout
 
@@ -59,20 +98,27 @@ src/
   core/         IDs, Clock, errors, Result, statuses, canonical JSON
   graph/        TaskGraph: validation, cycle detection, topological order
   orchestrator/ lifecycle, ready queue, concurrency, retries, cancellation
-  agents/       Agent interface, registry, deterministic agent
+                AIWorkflow: planner -> specialists -> verifier + repair loop
+  agents/       Agent interface, registry, deterministic agent,
+                Zod structured schemas, tool caller,
+                planner / researcher / builder / verifier agents
   tools/        Tool interface, schema validation, registry, builtins
   events/       typed events, event bus, evidence log
   persistence/  SQLite (WAL), migrations, repositories
-  providers/    Provider interface, deterministic provider
+  providers/    Provider interface, deterministic provider,
+                LLMProvider interface, deterministic LLM adapter,
+                optional OpenAI-compatible provider
   index.ts      composition root
-  cli.ts        demo CLI
-tests/          90 unit + integration tests
+  cli.ts        demo CLI (graph demo + AI demo)
+tests/          197 unit + integration tests
 docs/           architecture.md
 ```
 
-See [docs/architecture.md](docs/architecture.md) for module
-boundaries, dependency inversion, the execution lifecycle,
-persistence design, and how real LLM providers plug in later.
+See [docs/architecture.md](docs/architecture.md) for
+module boundaries, dependency inversion, the LLM
+provider layer, structured outputs, agent roles, the
+tool execution flow, the repair loop, and provider
+neutrality.
 
 ## License
 

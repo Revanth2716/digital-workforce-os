@@ -11,6 +11,13 @@ export * from './graph/task-graph.js';
 export * from './agents/agent.js';
 export * from './agents/agent-registry.js';
 export * from './agents/deterministic-agent.js';
+export * from './agents/schemas.js';
+export * from './agents/agent-support.js';
+export * from './agents/tool-caller.js';
+export * from './agents/planner-agent.js';
+export * from './agents/researcher-agent.js';
+export * from './agents/builder-agent.js';
+export * from './agents/verifier-agent.js';
 export * from './tools/tool.js';
 export * from './tools/tool-registry.js';
 export * from './tools/builtin-tools.js';
@@ -24,7 +31,13 @@ export * from './persistence/event-repository.js';
 export * from './providers/provider.js';
 export * from './providers/random.js';
 export * from './providers/deterministic-provider.js';
+export * from './providers/llm-provider.js';
+export * from './providers/json-schema-generate.js';
+export * from './providers/deterministic-llm-provider.js';
+export * from './providers/openai-compatible-provider.js';
 export * from './orchestrator/orchestrator.js';
+export * from './orchestrator/ai-workflow.js';
+export * from './orchestrator/ai-demo.js';
 
 import { AppDatabase } from './persistence/database.js';
 import { RunRepository } from './persistence/run-repository.js';
@@ -34,11 +47,21 @@ import { TypedEventBus } from './events/event-bus.js';
 import { EvidenceLog } from './events/evidence.js';
 import { AgentRegistry } from './agents/agent-registry.js';
 import { DeterministicAgent } from './agents/deterministic-agent.js';
+import { PlannerAgent } from './agents/planner-agent.js';
+import { ResearcherAgent } from './agents/researcher-agent.js';
+import { BuilderAgent } from './agents/builder-agent.js';
+import { VerifierAgent } from './agents/verifier-agent.js';
 import { ToolRegistry } from './tools/tool-registry.js';
 import { CalculatorTool, WordCountTool } from './tools/builtin-tools.js';
 import { DeterministicProvider } from './providers/deterministic-provider.js';
+import {
+  DeterministicLLMProvider,
+} from './providers/deterministic-llm-provider.js';
+import type { LLMProvider } from './providers/llm-provider.js';
+import { AIWorkflow } from './orchestrator/ai-workflow.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { Clock, IdGenerator, RandomIdGenerator, SystemClock } from './core/types.js';
+import type { JsonValue } from './core/json.js';
 
 /** Configuration for the default composition. */
 export interface CompositionConfig {
@@ -51,6 +74,22 @@ export interface CompositionConfig {
   readonly retryBaseDelayMs?: number;
   /** Default seed for the deterministic provider. */
   readonly seed?: number;
+  /**
+   * Optional LLM provider override (Milestone 2). Defaults to
+   * the offline deterministic LLM provider — no network, no
+   * API key. Pass an `OpenAICompatibleProvider` (configured
+   * explicitly) to use a real model.
+   */
+  readonly llm?: LLMProvider;
+  /**
+   * Scripted structured responses for the default
+   * deterministic LLM provider, keyed by intent.
+   * Used by demos and tests for fully controlled
+   * offline scenarios.
+   */
+  readonly llmResponses?: Readonly<Record<string, JsonValue>>;
+  /** Maximum automatic AI workflow repair cycles. Defaults to 1. */
+  readonly maxRepairCycles?: number;
 }
 
 /** All wired modules, ready to use. */
@@ -60,7 +99,12 @@ export interface Composition {
   readonly orchestrator: Orchestrator;
   readonly agents: AgentRegistry;
   readonly tools: ToolRegistry;
+  /** Milestone 1 text provider. */
   readonly provider: DeterministicProvider;
+  /** Milestone 2 LLM provider (structured generation). */
+  readonly llm: LLMProvider;
+  /** Milestone 2 AI workflow (planner -> specialists -> verifier). */
+  readonly ai: AIWorkflow;
   readonly evidence: EvidenceLog;
   readonly runs: RunRepository;
   readonly tasks: TaskRepository;
@@ -89,12 +133,30 @@ export function createComposition(config: CompositionConfig = {}): Composition {
   const provider = new DeterministicProvider({ seed: config.seed });
   const agent = new DeterministicAgent(provider);
 
-  const agents = new AgentRegistry();
-  agents.register(agent);
+  // Milestone 2: the LLM provider layer. The default is the
+  // offline deterministic adapter (zero network); an explicitly
+  // configured provider (e.g. OpenAICompatibleProvider) can be
+  // injected. The deterministic provider remains fully functional.
+  const llm: LLMProvider =
+    config.llm ??
+    new DeterministicLLMProvider({
+      seed: config.seed,
+      responses: config.llmResponses,
+    });
 
   const tools = new ToolRegistry();
   tools.register(new CalculatorTool());
   tools.register(new WordCountTool());
+
+  const agents = new AgentRegistry();
+  agents.register(agent);
+  // AI specialist agents. The planner verifies plans against
+  // this registry at execution time, so registration order
+  // does not matter.
+  agents.register(new PlannerAgent(llm, agents));
+  agents.register(new ResearcherAgent(llm, tools));
+  agents.register(new BuilderAgent(llm, tools));
+  agents.register(new VerifierAgent(llm));
 
   const evidence = new EvidenceLog(bus, ids, clock);
 
@@ -114,6 +176,22 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     },
   });
 
+  const ai = new AIWorkflow({
+    agents,
+    tools,
+    bus,
+    ids,
+    clock,
+    runs,
+    tasks,
+    evidence,
+    llm,
+    options: {
+      concurrency: config.concurrency,
+      maxRepairCycles: config.maxRepairCycles,
+    },
+  });
+
   return {
     db,
     bus,
@@ -121,6 +199,8 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     agents,
     tools,
     provider,
+    llm,
+    ai,
     evidence,
     runs,
     tasks,

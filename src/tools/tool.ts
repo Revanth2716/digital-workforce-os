@@ -106,5 +106,11 @@ export interface Tool<Args = JsonValue, Output = JsonValue> {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: Schema;
+  /**
+   * True when the tool has no side effects (pure function, no I/O).
+   * Read-only agents (e.g. the researcher) only invoke tools that
+   * are explicitly marked read-only. Defaults to not guaranteed.
+   */
+  readonly readOnly?: boolean;
   execute(args: Args, context: ToolContext): Promise<Output>;
 }

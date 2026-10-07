@@ -16,7 +16,8 @@ export type ErrorCode =
   | 'timeout'
   | 'orchestration'
   | 'persistence'
-  | 'provider';
+  | 'provider'
+  | 'structured_output';
 
 /**
  * Base class for all domain errors. Carries a stable `code` so callers can
@@ -154,5 +155,25 @@ export class PersistenceError extends DomainError {
 export class ProviderError extends DomainError {
   constructor(message: string, options?: { readonly cause?: unknown }) {
     super('provider', message, options);
+  }
+}
+
+/**
+ * A model returned output that could not be validated against the
+ * requested structured schema. Carries the validation issues so
+ * callers (and the evidence log) can report exactly what failed.
+ */
+export class StructuredOutputError extends DomainError {
+  readonly issues: readonly string[];
+
+  constructor(
+    message: string,
+    options?: {
+      readonly cause?: unknown;
+      readonly issues?: readonly string[];
+    },
+  ) {
+    super('structured_output', message, options);
+    this.issues = options?.issues ?? [];
   }
 }

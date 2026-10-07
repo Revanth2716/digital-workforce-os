@@ -1,7 +1,7 @@
 {
   "name": "digital-workforce-os",
   "version": "0.1.0",
-  "description": "Digital Workforce OS — governed multi-agent AI workflow system (Milestone 1: core foundation)",
+  "description": "Digital Workforce OS — governed multi-agent AI workflow system (Milestones 1-2: core foundation + AI agent layer)",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.19.0",
@@ -11,6 +11,7 @@
   },
   "scripts": {
     "demo": "tsx src/cli.ts",
+    "demo:ai": "tsx src/cli.ts --ai",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
@@ -21,7 +22,8 @@
     "verify": "pnpm typecheck && pnpm test && pnpm demo"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "better-sqlite3": "^13.0.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
