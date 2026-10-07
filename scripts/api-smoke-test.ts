@@ -172,7 +172,47 @@ async function main() {
     const noRoute = await get('/api/nope');
     check('unknown route returns 404', noRoute.status === 404, `got ${noRoute.status}`);
 
-    // ---- 11. no secrets leaked ----
+    // ---- 11. dashboard support endpoints (M5-B) ----
+    const stats = await get('/api/stats');
+    check('GET /api/stats returns 200', stats.status === 200, `got ${stats.status}`);
+    check('stats report total runs', typeof stats.body?.totalRuns === 'number');
+    check(
+      'stats report successful and failed runs',
+      typeof stats.body?.successfulRuns === 'number' &&
+        typeof stats.body?.failedRuns === 'number',
+    );
+    check(
+      'stats report an average duration',
+      stats.body?.averageDurationMs === null || typeof stats.body?.averageDurationMs === 'number',
+    );
+    check('stats report pending approvals', typeof stats.body?.pendingApprovals === 'number');
+    check(
+      'stats flag token availability explicitly',
+      typeof stats.body?.tokenUsageAvailable === 'boolean',
+    );
+
+    const approvals = await get('/api/approvals');
+    check('GET /api/approvals returns 200', approvals.status === 200, `got ${approvals.status}`);
+    check('approvals response is a list', Array.isArray(approvals.body?.approvals));
+
+    const scopedApprovals = await get(`/api/approvals?runId=${runId}`);
+    check(
+      'approvals can be scoped to a run',
+      scopedApprovals.status === 200 && Array.isArray(scopedApprovals.body?.approvals),
+    );
+
+    // The run list must carry what the run table renders.
+    const runsList = await get('/api/runs');
+    const listed = (runsList.body?.runs ?? []).find((r) => r.id === runId);
+    check('run list includes the created run', listed !== undefined);
+    check('run list carries durationMs', listed !== undefined && 'durationMs' in listed);
+    check('run list carries an evaluation score', listed !== undefined && 'evaluationScore' in listed);
+    check(
+      'run list carries an approval state',
+      listed !== undefined && typeof listed.approvalState === 'string',
+    );
+
+    // ---- 12. no secrets leaked ----
     const serialized = JSON.stringify(metrics.body);
     check(
       'metrics response contains no credential-like field',

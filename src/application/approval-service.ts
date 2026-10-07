@@ -26,6 +26,16 @@ export interface ApprovalSubmission {
   readonly description: string;
 }
 
+/** The approval state of a single run, as the dashboard sees it. */
+export type ApprovalRunState =
+  | { readonly status: 'NONE' }
+  | { readonly status: 'PENDING_APPROVAL' }
+  | {
+      readonly status: 'APPROVED' | 'REJECTED';
+      readonly requestId: string;
+      readonly comment?: string;
+    };
+
 /** A resolved approval outcome. */
 export interface ApprovalResolution {
   readonly requestId: string;
@@ -102,6 +112,13 @@ export class ApprovalService {
       },
     );
 
+    // Tracked here so a run's approval state remains resolvable
+    // after the request leaves the pending list.
+    if (input.runId !== undefined) {
+      this.requestRunIds.set(request.id, input.runId);
+      this.requestOrder.push(request.id);
+    }
+
     return {
       requestId: request.id,
       status: 'PENDING_APPROVAL',
@@ -150,6 +167,58 @@ export class ApprovalService {
   listPending(): ApprovalRequest[] {
     return this.deps.approvals.getPendingRequests();
   }
+
+  /**
+   * Pending requests associated with a specific run.
+   *
+   * The association comes from the `runId` recorded in the request
+   * metadata by `submit`, so no approval state is duplicated.
+   */
+  listPendingForRun(runId: string): ApprovalRequest[] {
+    return this.deps.approvals
+      .getPendingRequests()
+      .filter((request) => this.requestRunIds.get(request.id) === runId);
+  }
+
+  /**
+   * Approval state for a run, as a single resolved value.
+   *
+   * Pending wins over resolved: a run with an outstanding request
+   * reports `PENDING_APPROVAL` even if an earlier request for the
+   * same run was already decided.
+   */
+  getStateForRun(runId: string): ApprovalRunState {
+    if (this.listPendingForRun(runId).length > 0) {
+      return { status: 'PENDING_APPROVAL' };
+    }
+
+    // Walk this service's requests newest-first so the last
+    // decision for the run is reported.
+    for (let i = this.requestOrder.length - 1; i >= 0; i -= 1) {
+      const requestId = this.requestOrder[i]!;
+      if (this.requestRunIds.get(requestId) !== runId) continue;
+      const decision = this.deps.approvals.getDecision(requestId);
+      if (decision !== undefined) {
+        return {
+          status: decision.decision,
+          requestId: decision.requestId,
+          ...(decision.comment !== undefined ? { comment: decision.comment } : {}),
+        };
+      }
+    }
+
+    return { status: 'NONE' };
+  }
+
+  /** Resolve the run a request belongs to, when one was recorded. */
+  runIdForRequest(requestId: string): string | undefined {
+    return this.requestRunIds.get(requestId);
+  }
+
+  /** requestId -> runId, populated on submit. */
+  private readonly requestRunIds = new Map<string, string>();
+  /** Request ids in creation order, so "latest" is well defined. */
+  private readonly requestOrder: string[] = [];
 
   private toResolution(decision: ApprovalDecision): ApprovalResolution {
     return {

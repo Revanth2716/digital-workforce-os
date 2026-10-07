@@ -331,6 +331,66 @@ describe('API — approvals', () => {
   });
 });
 
+describe('API — dashboard support endpoints', () => {
+  it('returns aggregate statistics', async () => {
+    await createRun();
+    const response = await get('/api/stats');
+
+    expect(response.status).toBe(200);
+    expect(typeof response.body.totalRuns).toBe('number');
+    expect(typeof response.body.successfulRuns).toBe('number');
+    expect(typeof response.body.failedRuns).toBe('number');
+    expect(typeof response.body.runningRuns).toBe('number');
+    expect(typeof response.body.pendingApprovals).toBe('number');
+    // Token availability is flagged rather than assumed.
+    expect(typeof response.body.tokenUsageAvailable).toBe('boolean');
+  });
+
+  it('excludes internal phase runs from the run list', async () => {
+    const runId = await createRun();
+    const response = await get('/api/runs');
+    const ids: string[] = response.body.runs.map((run: { id: string }) => run.id);
+
+    expect(ids).toContain(runId);
+    // A single workflow must not render as several rows.
+    expect(ids.filter((id) => id === runId)).toHaveLength(1);
+    expect(ids.some((id) => id.startsWith('run-') === false)).toBe(false);
+  });
+
+  it('joins duration, evaluation score and approval state into the run list', async () => {
+    const runId = await createRun();
+    const response = await get('/api/runs');
+    const listed = response.body.runs.find((run: { id: string }) => run.id === runId);
+
+    expect(listed).toBeDefined();
+    expect(listed).toHaveProperty('durationMs');
+    expect(listed).toHaveProperty('evaluationScore');
+    expect(listed).toHaveProperty('evaluationPassed');
+    expect(typeof listed.approvalState).toBe('string');
+  });
+
+  it('lists pending approvals', async () => {
+    const response = await get('/api/approvals');
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body.approvals)).toBe(true);
+    expect(typeof response.body.count).toBe('number');
+  });
+
+  it('scopes approvals to a run', async () => {
+    const runId = await createRun();
+    const response = await get(`/api/approvals?runId=${runId}`);
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body.approvals)).toBe(true);
+  });
+
+  it('returns 404-free empty results for approvals of an unknown run', async () => {
+    // Approvals are keyed by run; an unknown run simply has none.
+    const response = await get('/api/approvals?runId=nope');
+    expect(response.status).toBe(200);
+    expect(response.body.count).toBe(0);
+  });
+});
+
 describe('API — security posture', () => {
   it('returns a structured error for an unknown route', async () => {
     const response = await get('/api/does-not-exist');

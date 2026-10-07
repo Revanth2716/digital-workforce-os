@@ -50,6 +50,32 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
     }),
   );
 
+  // ---- GET /api/stats ----
+  // Aggregate dashboard figures, computed server-side so the UI does
+  // not need one metrics request per run.
+  app.get('/api/stats', (c) => {
+    const stats = runs.getStats();
+    return ok(c, { ...stats, pendingApprovals: approvals.listPending().length });
+  });
+
+  // ---- GET /api/approvals ----
+  // Pending approval requests, optionally scoped to one run.
+  app.get('/api/approvals', (c) => {
+    const runId = c.req.query('runId');
+    const pending = runId !== undefined ? approvals.listPendingForRun(runId) : approvals.listPending();
+    return ok(c, {
+      approvals: pending.map((request) => ({
+        requestId: request.id,
+        actionType: request.actionType,
+        description: request.description,
+        status: request.status,
+        createdAt: new Date(request.createdAt).toISOString(),
+        runId: approvals.runIdForRequest(request.id) ?? null,
+      })),
+      count: pending.length,
+    });
+  });
+
   // ---- GET /api/runs ----
   app.get('/api/runs', (c) => {
     const parsed = parseOrIssues(ListQuerySchema, c.req.query());
@@ -57,7 +83,25 @@ export function registerRoutes(app: Hono, deps: RouteDeps): void {
       return fail(c, 400, 'invalid_query', 'Invalid query parameters', parsed.issues);
     }
     const list = runs.listRuns(parsed.value.limit ?? 100);
-    return ok(c, { runs: list, count: list.length });
+    return ok(c, {
+      // Duration, evaluation score and approval state are joined in
+      // here so the run table renders from one request.
+      runs: list.map((run) => {
+        const evaluationView = evaluation.evaluateRun(run.id);
+        const approvalState = approvals.getStateForRun(run.id);
+        return {
+          ...run,
+          durationMs: runs.getRunDurationMs(run.id),
+          evaluationScore: evaluationView.score,
+          evaluationPassed: evaluationView.passed,
+          approvalState: approvalState.status,
+          ...(approvalState.status === 'APPROVED' || approvalState.status === 'REJECTED'
+            ? { approvalRequestId: approvalState.requestId }
+            : {}),
+        };
+      }),
+      count: list.length,
+    });
   });
 
   // ---- GET /api/runs/:id ----

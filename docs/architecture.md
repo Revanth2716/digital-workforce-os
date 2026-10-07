@@ -945,6 +945,8 @@ Endpoints:
 | Method | Path | Service call |
 | --- | --- | --- |
 | GET | `/health` | health + determinism flag |
+| GET | `/api/stats` | `RunService.getStats` + pending approval count |
+| GET | `/api/approvals` | `ApprovalService.listPending` (optionally `?runId=`) |
 | GET | `/api/runs` | `RunService.listRuns` |
 | GET | `/api/runs/:id` | `RunService.getRun` / `getTasks` |
 | GET | `/api/runs/:id/events` | `RunService.getEvents` |
@@ -954,6 +956,28 @@ Endpoints:
 | POST | `/api/workflows` | `WorkflowService.executeRun` |
 | POST | `/api/workflows/:id/approve` | `ApprovalService.approve` |
 | POST | `/api/workflows/:id/reject` | `ApprovalService.reject` |
+
+`GET /api/runs` additionally joins `durationMs`,
+`evaluationScore`, `evaluationPassed` and `approvalState` per
+row, so the run table renders from a single request.
+
+### Local security posture
+
+This is a **local, single-user development system with no
+authentication layer**. That is a deliberate trade-off, not an
+oversight:
+
+- The backend binds `127.0.0.1` by default. Setting
+  `API_HOST=0.0.0.0` would expose an unauthenticated service to
+  the network — do not do this outside a trusted machine.
+- Adding authentication would require storing or fetching
+  credentials, which would break the zero-cost, no-secret rule.
+  It belongs in a future milestone, ideally as an optional
+  reverse-proxy layer rather than an in-process secret store.
+- CORS is off by default; enabling it requires an explicit
+  allowlist, and a `*` entry throws at startup.
+
+## Control-plane dashboard (Milestone 5-B)
 
 Handlers are transport-only: parse with Zod, call one service
 method, shape the response. No orchestration, persistence or
@@ -979,17 +1003,86 @@ policy logic lives in a route.
 (releasing the port) and then closes the database, so no
 migration lock or WAL file is left behind.
 
+## Control-plane dashboard (Milestone 5-B)
+
+```
+apps/dashboard/
+  src/
+    api/          client.ts (typed fetch), types.ts, map.ts, format.ts
+    hooks/        useResource.ts (loading/error/refresh + polling)
+    components/   ui.tsx, Overview.tsx, RunList.tsx, RunDetailPanels.tsx
+    App.tsx       shell: selected run + panel wiring
+    styles.css    hand-written; system fonts only
+```
+
+React 18 + Vite 7 + TypeScript. Two runtime dependencies
+(`react`, `react-dom`); no UI kit, no icon package, no CSS
+framework, no webfont, no analytics. The stylesheet uses system
+fonts, so the dashboard makes **zero external network requests**.
+
+### Layering
+
+```
+App.tsx  ──►  hooks/useResource  ──►  api/client  ──►  REST API
+   │                                        │
+   └──►  components/*  ◄──  api/map.ts ◄── types.ts
+```
+
+- `api/client.ts` owns URL construction, the structured error
+  envelope, and shallow response-shape validation. Nothing else.
+- `api/map.ts` reshapes payloads into view models; it never
+  recomputes a score or decides an approval outcome.
+- `api/format.ts` holds the display rules as pure functions.
+- `hooks/useResource.ts` owns the loading/error/refresh state
+  machine.
+
+All three non-visual layers are unit tested directly, so the
+tests need no DOM.
+
+### Unavailable data is never invented
+
+The backend reports unobserved numeric metrics as `null`. The
+dashboard renders those as **N/A** (and unavailable metric cells
+are styled in italics to distinguish them from a real value). A
+measured `0` still renders as `0`. This distinction is asserted
+throughout `map.test.ts`.
+
+### Two aggregation rules worth noting
+
+- **Run list excludes phase runs.** A workflow creates one
+  orchestrator run per phase (planner, main, repairs).
+  `RunService.listRuns()` derives the set of member run ids from
+  stored metadata and filters them out, so one workflow renders
+  as one row. The members stay reachable via `scopeRunIds`.
+- **`/api/stats` is computed server-side.** The dashboard needs
+  tool-call and token totals across all runs; computing that in
+  the browser would mean one metrics request per run. Aggregation
+  therefore stays on the server, next to the stored data.
+
+### Approval actions delegate
+
+The Approve/Reject buttons call
+`POST /api/workflows/:id/approve|reject` and then re-read the run
+and approvals from the server. The UI never decides an outcome
+locally and never shows an optimistic state that the backend did
+not confirm.
+
+### Refresh model
+
+Simple interval polling (5 s) on the stats, run list and the
+selected run's live panels. Polling pauses while the tab is
+hidden and while a request for the same resource is already in
+flight. Deliberately **no WebSockets**: for a single-user local
+tool, polling is simpler and avoids a persistent connection in
+the backend.
+
+`useResource` forces a fetch when the resource's identity changes
+(selecting a different run) even if the previous fetch is still
+pending, and discards any response that resolves after a newer
+one. A global in-flight guard would have silently skipped the new
+run — the force path exists for exactly that case.
+
 ## Local-only execution and deterministic mode
-
-The default `DeterministicLLMProvider` keeps the entire stack
-offline. The API reports this explicitly via
-`health.deterministic`. A workflow created over HTTP uses the
-same scripted responses as the CLI demo, so identical inputs
-produce identical plans, findings and verdicts — the API is
-reproducible, not just functional.
-
-`GET /health` and every read endpoint work without any
-credential, and the smoke test requires none.
 
 ## Out of scope (deliberately)
 

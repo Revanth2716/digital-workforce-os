@@ -303,7 +303,20 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     model: llm.model.name,
   });
 
-  const runService = new RunService({ runs, tasks, events, observability });
+  const approvalService = new ApprovalService({
+    approvals: config.approval ?? new ApprovalManager(config.approvalHandler),
+    clock,
+  });
+
+  const runService = new RunService({
+    runs,
+    tasks,
+    events,
+    observability,
+    // Supplied as a callback so RunService stays independent of
+    // the approval service.
+    pendingApprovalCount: () => approvalService.listPending().length,
+  });
   const workflowService = new WorkflowService({
     ai,
     orchestrator,
@@ -311,10 +324,6 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     ids,
     tracer,
     maxRepairCycles: config.maxRepairCycles,
-  });
-  const approvalService = new ApprovalService({
-    approvals: config.approval ?? new ApprovalManager(config.approvalHandler),
-    clock,
   });
   const evaluationService = new EvaluationService({ runService });
 

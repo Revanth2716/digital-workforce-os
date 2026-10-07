@@ -29,6 +29,23 @@ export interface EvidenceRecordView {
   readonly hash: string;
 }
 
+/** Aggregate dashboard statistics, derived from stored runs. */
+export interface RunStatsView {
+  readonly totalRuns: number;
+  readonly successfulRuns: number;
+  readonly failedRuns: number;
+  readonly runningRuns: number;
+  /** Mean duration of completed runs; null when none completed. */
+  readonly averageDurationMs: number | null;
+  readonly totalToolCalls: number | null;
+  readonly totalErrors: number | null;
+  /** True when at least one run reported token usage. */
+  readonly tokenUsageAvailable: boolean;
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly totalTokens: number | null;
+}
+
 /** Dependencies for the run service. */
 export interface RunServiceDeps {
   readonly runs: RunRepository;
@@ -37,6 +54,11 @@ export interface RunServiceDeps {
   readonly observability: ObservabilityRepository;
   /** Maximum events returned by list calls; guards against unbounded reads. */
   readonly maxEvents?: number;
+  /**
+   * Pending approval count, supplied by the approval service.
+   * Injected as a callback so RunService does not depend on it.
+   */
+  readonly pendingApprovalCount?: () => number;
 }
 
 /** Aggregated observability metrics for a run. */
@@ -115,13 +137,46 @@ export class RunService {
     return row ?? undefined;
   }
 
-  /** Every run, newest first. */
+  /**
+ * Every top-level run, newest first.
+ *
+ * A workflow creates one orchestrator run per phase (planner,
+ * main, repairs). Those member runs are implementation detail, not
+ * separate units of work, so they are excluded here — otherwise a
+ * single workflow would appear as four rows. They remain
+ * reachable through their parent via `scopeRunIds`.
+ */
   listRuns(limit: number = 100): RunRow[] {
-    return this.deps.runs
-      .list()
-      .slice()
+    const all = this.deps.runs.list();
+    const memberRunIds = this.memberRunIds(all);
+
+    return all
+      .filter((row) => !memberRunIds.has(row.id))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, Math.max(1, limit));
+  }
+
+  /**
+   * The set of run ids that are phases of some other run.
+   *
+   * Derived entirely from stored metadata, so no extra state is
+   * needed and the result is deterministic.
+   */
+  private memberRunIds(rows: readonly RunRow[]): Set<string> {
+    const members = new Set<string>();
+    for (const row of rows) {
+      if (row.metadata === undefined) continue;
+      try {
+        const metadata = JSON.parse(row.metadata) as { memberRunIds?: unknown };
+        if (!Array.isArray(metadata.memberRunIds)) continue;
+        for (const id of metadata.memberRunIds) {
+          if (typeof id === 'string' && id !== row.id) members.add(id);
+        }
+      } catch {
+        // Malformed metadata is ignored; the run stays top-level.
+      }
+    }
+    return members;
   }
 
   /** Tasks belonging to a run, including those of its member runs. */
@@ -300,6 +355,72 @@ export class RunService {
       }
     }
     return [...seen.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  }
+
+  /**
+   * Aggregate statistics across all runs, for the dashboard.
+   *
+   * Computed server-side from the same stored data the detail
+   * endpoints read, so the frontend does not have to fan out one
+   * metrics request per run just to render a summary.
+   */
+  getStats(): RunStatsView {
+    const runs = this.deps.runs.list();
+    let successful = 0;
+    let failed = 0;
+    let running = 0;
+    let durationSum = 0;
+    let durationSamples = 0;
+    let toolCalls: number | null = null;
+    let errors: number | null = null;
+    let input: number | null = null;
+    let output: number | null = null;
+    let total: number | null = null;
+
+    for (const run of runs) {
+      if (run.status === 'succeeded') successful += 1;
+      else if (run.status === 'failed') failed += 1;
+      else if (run.status === 'running' || run.status === 'pending') running += 1;
+
+      const duration = this.getRunDurationMs(run.id);
+      if (duration !== null) {
+        durationSum += duration;
+        durationSamples += 1;
+      }
+
+      const metrics = this.getMetrics(run.id);
+      // `null` means "never observed" for that run; one reported
+      // run is enough to make the aggregate available.
+      if (metrics.toolCallCount !== null) {
+        toolCalls = (toolCalls ?? 0) + metrics.toolCallCount;
+      }
+      if (metrics.errorCount !== null) {
+        errors = (errors ?? 0) + metrics.errorCount;
+      }
+      if (metrics.inputTokens !== null) input = (input ?? 0) + metrics.inputTokens;
+      if (metrics.outputTokens !== null) output = (output ?? 0) + metrics.outputTokens;
+      if (metrics.totalTokens !== null) total = (total ?? 0) + metrics.totalTokens;
+    }
+
+    return {
+      totalRuns: runs.length,
+      successfulRuns: successful,
+      failedRuns: failed,
+      runningRuns: running,
+      averageDurationMs:
+        durationSamples === 0 ? null : Math.round(durationSum / durationSamples),
+      totalToolCalls: toolCalls,
+      totalErrors: errors,
+      tokenUsageAvailable: total !== null,
+      inputTokens: input,
+      outputTokens: output,
+      totalTokens: total,
+    };
+  }
+
+  /** Pending approval count, or 0 when no approval service is wired. */
+  getPendingApprovalCount(): number {
+    return this.deps.pendingApprovalCount?.() ?? 0;
   }
 }
 

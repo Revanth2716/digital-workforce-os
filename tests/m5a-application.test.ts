@@ -63,6 +63,53 @@ describe('Application — RunService', () => {
     expect(runs.some((run) => run.id === b.runId)).toBe(true);
   });
 
+  it('excludes internal phase runs from the run list', async () => {
+    const composition = makeComposition();
+    const result = await composition.workflowService.executeRun(AI_DEMO_OBJECTIVE);
+
+    const listed = composition.runService
+      .listRuns()
+      .map((run) => run.id);
+    expect(listed).toContain(result.runId);
+
+    // The planner/main/repair runs are phases of the workflow, not
+    // separate units of work, so they must not appear as their own
+    // rows — otherwise one workflow would render four times.
+    const scope = composition.runService.scopeRunIds(result.runId);
+    expect(scope.length).toBeGreaterThan(1);
+    for (const memberId of scope.filter((id) => id !== result.runId)) {
+      expect(listed).not.toContain(memberId);
+    }
+  });
+
+  it('reports aggregate statistics for the dashboard', async () => {
+    const composition = makeComposition();
+    await composition.workflowService.executeRun(AI_DEMO_OBJECTIVE);
+
+    const stats = composition.runService.getStats();
+    expect(stats.totalRuns).toBeGreaterThanOrEqual(1);
+    expect(stats.successfulRuns).toBeGreaterThanOrEqual(1);
+    expect(stats.failedRuns).toBe(0);
+    expect(stats.averageDurationMs).not.toBeNull();
+    expect(stats.totalToolCalls).toBeGreaterThan(0);
+  });
+
+  it('reports a pending approval count when an approval service is wired', async () => {
+    const composition = makeComposition();
+    await composition.workflowService.executeRun(AI_DEMO_OBJECTIVE);
+    const runId = composition.runService.listRuns()[0]!.id;
+
+    expect(composition.runService.getPendingApprovalCount()).toBe(0);
+
+    composition.approvalService.submit({
+      actionType: 'COMMIT',
+      description: 'needs sign-off',
+      runId,
+    });
+
+    expect(composition.runService.getPendingApprovalCount()).toBe(1);
+  });
+
   it('creates a run without executing it', () => {
     const composition = makeComposition();
     const created = composition.workflowService.createRun({ name: 'reserved' });
@@ -327,6 +374,71 @@ describe('Application — ApprovalService', () => {
     service.submit({ actionType: 'COMMIT', description: 'a' });
     service.submit({ actionType: 'PUSH', description: 'b' });
     expect(service.listPending()).toHaveLength(2);
+  });
+
+  it('scopes pending requests to a run', async () => {
+    const { ApprovalService } = await import('../src/application/approval-service.js');
+    const service = new ApprovalService({
+      approvals: new ApprovalManager(),
+      clock: new FakeClock(),
+    });
+
+    service.submit({ actionType: 'COMMIT', description: 'a', runId: 'run-1' });
+    service.submit({ actionType: 'PUSH', description: 'b', runId: 'run-2' });
+
+    expect(service.listPendingForRun('run-1')).toHaveLength(1);
+    expect(service.listPendingForRun('run-2')).toHaveLength(1);
+    expect(service.listPendingForRun('run-3')).toHaveLength(0);
+  });
+
+  it('reports the approval state of a run', async () => {
+    const { ApprovalService } = await import('../src/application/approval-service.js');
+    const service = new ApprovalService({
+      approvals: new ApprovalManager(),
+      clock: new FakeClock(),
+    });
+
+    // No requests yet.
+    expect(service.getStateForRun('run-1').status).toBe('NONE');
+
+    const submitted = service.submit({ actionType: 'COMMIT', description: 'a', runId: 'run-1' });
+    expect(service.getStateForRun('run-1').status).toBe('PENDING_APPROVAL');
+    expect(service.runIdForRequest(submitted.requestId)).toBe('run-1');
+
+    service.approve(submitted.requestId, 'ok');
+    expect(service.getStateForRun('run-1').status).toBe('APPROVED');
+  });
+
+  it('reports REJECTED after a rejection', async () => {
+    const { ApprovalService } = await import('../src/application/approval-service.js');
+    const service = new ApprovalService({
+      approvals: new ApprovalManager(),
+      clock: new FakeClock(),
+    });
+
+    const submitted = service.submit({ actionType: 'PUSH', description: 'a', runId: 'run-1' });
+    service.reject(submitted.requestId);
+
+    const state = service.getStateForRun('run-1');
+    expect(state.status).toBe('REJECTED');
+    expect(state.status === 'REJECTED' ? state.requestId : undefined).toBe(
+      submitted.requestId,
+    );
+  });
+
+  it('prefers PENDING over an earlier decision for the same run', async () => {
+    const { ApprovalService } = await import('../src/application/approval-service.js');
+    const service = new ApprovalService({
+      approvals: new ApprovalManager(),
+      clock: new FakeClock(),
+    });
+
+    const first = service.submit({ actionType: 'COMMIT', description: 'first', runId: 'run-1' });
+    service.approve(first.requestId);
+
+    // A second outstanding request must surface as pending.
+    service.submit({ actionType: 'PUSH', description: 'second', runId: 'run-1' });
+    expect(service.getStateForRun('run-1').status).toBe('PENDING_APPROVAL');
   });
 
   it('produces deterministic request ids', async () => {

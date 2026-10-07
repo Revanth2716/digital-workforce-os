@@ -1,5 +1,10 @@
 # pnpm settings (pnpm 11+ reads configuration from this file)
 
+# Workspace members: the backend root and the dashboard app.
+packages:
+  - '.'
+  - 'apps/*'
+
 # Dependencies whose postinstall build scripts are allowed to run
 # (they compile/download native binaries).
 onlyBuiltDependencies:

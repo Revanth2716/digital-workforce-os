@@ -16,6 +16,8 @@ engine, a capability policy engine, prompt-injection defenses,
 human approval, and evidence-backed quality scoring.
 Milestone 5-A adds the production-style platform: an
 application service layer, local observability, and a REST API.
+Milestone 5-B adds the React control-plane dashboard on top of
+that API.
 
 - **Completely free to develop, test and run** — no
   API keys, no paid AI APIs, no cloud services. The
@@ -81,6 +83,10 @@ application service layer, local observability, and a REST API.
 - **Local REST API (M5-A)** — a loopback-bound JSON API over the
   services, with Zod request validation, structured errors, CORS
   off by default, and graceful shutdown. Fully offline.
+- **Control-plane UI (M5-B)** — a React/Vite dashboard for runs,
+  the agent pipeline, event timeline, evidence, evaluation,
+  metrics and approvals. Two runtime dependencies, system fonts,
+  no analytics: it makes zero external requests.
 
 ## Requirements
 
@@ -91,14 +97,17 @@ application service layer, local observability, and a REST API.
 
 ```sh
 pnpm install
-pnpm test        # vitest — 468 tests
+pnpm test        # backend vitest — 481 tests
 pnpm typecheck   # tsc --noEmit
 pnpm demo        # M1: research -> implementation -> verification
 pnpm demo:ai     # M2: planner -> researcher -> builder -> verifier (with repair)
 pnpm demo:safety # M4: evaluation, policy, approval, injection defense
 pnpm api         # M5-A: local REST API on http://127.0.0.1:4317
 pnpm smoke:api   # M5-A: end-to-end API smoke test (offline)
-pnpm build       # compile to dist/ (plus asset copy)
+pnpm dashboard   # M5-B: dashboard dev server on http://127.0.0.1:5173
+pnpm dashboard:build     # production bundle -> apps/dashboard/dist
+pnpm dashboard:test      # 68 dashboard tests
+pnpm build       # compile backend to dist/ (plus asset copy)
 pnpm verify      # typecheck + test + demo
 ```
 
@@ -193,11 +202,12 @@ src/
   api/          M5-A: REST server, Zod schemas, routes, entry point
   index.ts      composition root
   cli.ts        demo CLI (graph demo + AI demo + safety demo)
+apps/dashboard/   M5-B: React control-plane UI (Vite + TypeScript)
 skills/           Version-controlled Markdown skills
   repository-analysis/SKILL.md
   safe-code-change/SKILL.md
   verification/SKILL.md
-tests/            468 unit + integration tests
+tests/            481 backend unit + integration tests
 docs/             architecture.md
 ```
 
@@ -228,6 +238,22 @@ POST /api/workflows/:id/reject
 Loopback-bound by default, CORS disabled unless an explicit
 allowlist is configured, no authentication (local, single-user),
 and no secret is read or returned.
+
+## Dashboard (M5-B)
+
+```sh
+pnpm api          # terminal 1 — backend on :4317
+pnpm dashboard    # terminal 2 — UI on :5173 (proxies /api to the backend)
+```
+
+Run the workflow from the UI, then open a run to inspect the
+agent pipeline, event timeline, evidence, evaluation score,
+metrics and approval actions. Values the API reports as
+unavailable render as **N/A** rather than `0`.
+
+> **Local single-user development system — no authentication.**
+> The API binds loopback by default. Do not set `API_HOST=0.0.0.0`
+> on an untrusted machine.
 
 See [docs/architecture.md](docs/architecture.md) for
 module boundaries, dependency inversion, the LLM
