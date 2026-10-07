@@ -47,6 +47,22 @@ integration, and reusable agent Skills.
 - **Skill-driven (M3)** — version-controlled Markdown
   skills with discovery, metadata parsing, deterministic
   selection, and injection into agent contexts.
+- **Evaluated (M4)** — a deterministic evaluation engine scores
+  every run against a version-controlled dataset (task
+  completion, structured validity, tool-call correctness,
+  retrieval relevance, source attribution, evidence
+  completeness, policy compliance, verifier result, repair
+  behavior) with explainable failures and evidence refs.
+- **Governed (M4)** — capability policy (ALLOW / DENY /
+  REQUIRE_APPROVAL) enforced *inside* `ToolRegistry.execute()`,
+  so no agent can invoke a tool without passing policy. Sensitive
+  actions (COMMIT / PUSH / CREATE_PR / EXECUTE_SAFE_COMMAND)
+  require human approval before running.
+- **Injection-aware (M4)** — a deterministic detector treats
+  retrieved documents, repository files, and tool output as
+  untrusted DATA and classifies them SAFE / SUSPICIOUS /
+  BLOCKED. It is a first-line defense, **not** a guarantee
+  against all attacks.
 
 ## Requirements
 
@@ -57,10 +73,11 @@ integration, and reusable agent Skills.
 
 ```sh
 pnpm install
-pnpm test        # vitest — 270 tests (90 M1 + 107 M2 + 73 M3)
+pnpm test        # vitest — 356 tests (90 M1 + 107 M2 + 73 M3 + 86 M4)
 pnpm typecheck   # tsc --noEmit
 pnpm demo        # M1: research -> implementation -> verification
 pnpm demo:ai     # M2: planner -> researcher -> builder -> verifier (with repair)
+pnpm demo --safety  # M4: evaluation, policy, approval, injection defense
 pnpm build       # compile to dist/ (plus asset copy)
 pnpm verify      # typecheck + test + demo
 ```
@@ -104,6 +121,23 @@ Both demos execute end-to-end, print a readable summary,
 and read every run, task and event back from SQLite to
 prove persistence.
 
+The safety demo (`--safety`) runs the full governed pipeline
+offline and deterministically:
+
+```
+PLAN                 ✓  planner produced an execution plan
+RAG                  ✓  retrievals grounded the agents
+SKILL                ✓  skills injected reusable instructions
+TOOL REQUEST         ✓  tool calls succeeded through the registry
+POLICY               ✓  capability policy evaluated every call
+VERIFIER             ⚠  verifier rejects the first attempt
+REPAIR               ✓  bounded repair cycle
+RE-EVALUATION        ✓  re-verification confirms the fix
+FINAL EVALUATION     ✓  PASS
+APPROVAL RESULT      ✓  APPROVED — COMMIT executed after approval
+INJECTION DEFENSE    ✓  BLOCKED untrusted input
+```
+
 ## Project layout
 
 ```
@@ -125,13 +159,20 @@ src/
                 knowledge store, context builder
   skills/       Skill types, loader (discovery + parsing), selector
   mcp/          MCP tools, stdio server, client
+  evaluation/   M4: metrics, assertions, test cases, dataset,
+                evaluator, report
+  policy/       M4: capabilities, decisions, policy engine
+  security/     M4: deterministic prompt-injection detector
+  approval/     M4: approval requests, decisions, manager
+  tools/        Tool interface, schema validation, registry, builtins,
+                policy gate (enforced inside the registry)
   index.ts      composition root
-  cli.ts        demo CLI (graph demo + AI demo)
+  cli.ts        demo CLI (graph demo + AI demo + safety demo)
 skills/           Version-controlled Markdown skills
   repository-analysis/SKILL.md
   safe-code-change/SKILL.md
   verification/SKILL.md
-tests/            270 unit + integration tests
+tests/            356 unit + integration tests
 docs/             architecture.md
 ```
 
@@ -140,7 +181,9 @@ module boundaries, dependency inversion, the LLM
 provider layer, structured outputs, agent roles, the
 tool execution flow, the repair loop, provider
 neutrality, RAG architecture, MCP architecture, skills
-architecture, and trust boundaries.
+architecture, the evaluation/policy/approval architecture,
+trust boundaries, and the documented limits of the
+prompt-injection detector.
 
 ## License
 

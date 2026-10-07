@@ -17,6 +17,8 @@ export interface CliOptions {
   json: boolean;
   /** Run the Milestone 2 AI workflow demo instead of the M1 graph demo. */
   ai: boolean;
+  /** Run the Milestone 4 evaluation / safety demo instead of the M1 graph demo. */
+  safety: boolean;
 }
 
 const DEFAULTS: CliOptions = {
@@ -26,6 +28,7 @@ const DEFAULTS: CliOptions = {
   verbose: false,
   json: false,
   ai: false,
+  safety: false,
 };
 
 /** Minimal, dependency-free argument parsing. */
@@ -47,6 +50,8 @@ export function parseArgs(argv: readonly string[]): CliOptions {
       options.json = true;
     } else if (arg === '--ai') {
       options.ai = true;
+    } else if (arg === '--safety') {
+      options.safety = true;
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -69,7 +74,20 @@ Options:
   --ai                 Run the Milestone 2 AI workflow demo
                        (planner -> researcher -> builder -> verifier,
                        with one automatic repair cycle; fully offline)
+  --safety             Run the Milestone 4 evaluation & safety demo
+                       (RAG + skills + policy + approval + repair +
+                       re-evaluation + injection defense; fully offline)
   --help               Show this help`);
+}
+
+/** The Milestone 4 evaluation/safety demo: fully offline, deterministic. */
+async function runSafetyCli(options: CliOptions): Promise<void> {
+  const { printSafetyDemo } = await import('./orchestrator/safety-demo.js');
+  await printSafetyDemo({ dbPath: ':memory:' });
+  // The safety demo owns its own composition and closes it;
+  // `options.dbPath` is intentionally not reused so the demo
+  // never mutates the caller's database.
+  void options;
 }
 
 /** The canonical Milestone 1 sample workflow: research -> implementation -> verification. */
@@ -118,6 +136,11 @@ async function main(): Promise<void> {
   const directory = join(options.dbPath, '..');
   if (directory && directory !== '.') {
     mkdirSync(directory, { recursive: true });
+  }
+
+  if (options.safety) {
+    await runSafetyCli(options);
+    return;
   }
 
   if (options.ai) {

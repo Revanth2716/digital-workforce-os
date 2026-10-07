@@ -38,9 +38,15 @@ export * from './providers/openai-compatible-provider.js';
 export * from './orchestrator/orchestrator.js';
 export * from './orchestrator/ai-workflow.js';
 export * from './orchestrator/ai-demo.js';
+export * from './orchestrator/safety-demo.js';
 export * from './knowledge/index.js';
 export * from './skills/index.js';
 export * from './mcp/index.js';
+export * from './evaluation/index.js';
+export * from './policy/index.js';
+export * from './security/index.js';
+export * from './approval/index.js';
+export * from './tools/policy-gate.js';
 
 import { AppDatabase } from './persistence/database.js';
 import { RunRepository } from './persistence/run-repository.js';
@@ -68,6 +74,10 @@ import type { JsonValue } from './core/json.js';
 import { KnowledgeStore } from './knowledge/knowledge-store.js';
 import { loadSkills } from './skills/skill-loader.js';
 import type { Skill } from './skills/skill.js';
+import { DefaultPolicyGate } from './tools/policy-gate.js';
+import { ApprovalManager } from './approval/approval-manager.js';
+import type { ApprovalHandler } from './approval/approval-manager.js';
+import type { PolicyEngine } from './policy/policy-engine.js';
 
 /** Configuration for the default composition. */
 export interface CompositionConfig {
@@ -112,6 +122,20 @@ export interface CompositionConfig {
   readonly knowledgeTopK?: number;
   /** Milestone 3: number of skills to select. Defaults to 2. */
   readonly skillTopK?: number;
+  /**
+   * Milestone 4: policy engine. When provided, every tool call
+   * is evaluated by the capability policy before execution —
+   * including calls made by agents. Defaults to undefined,
+   * which leaves the registry unguarded (Milestone 1-3
+   * behaviour).
+   */
+  readonly policy?: PolicyEngine;
+  /** Milestone 4: approval manager for REQUIRE_APPROVAL decisions. */
+  readonly approval?: ApprovalManager;
+  /** Milestone 4: convenience handler wired into a default approval manager. */
+  readonly approvalHandler?: ApprovalHandler;
+  /** Milestone 4: run prompt-injection checks on tool input/output. Defaults to true. */
+  readonly checkInjection?: boolean;
 }
 
 /** All wired modules, ready to use. */
@@ -170,7 +194,22 @@ export function createComposition(config: CompositionConfig = {}): Composition {
       responses: config.llmResponses,
     });
 
-  const tools = new ToolRegistry();
+  // Milestone 4: when a policy engine is configured, a gate is
+  // enforced inside ToolRegistry.execute(), so every tool call
+  // issued by an agent passes schema validation -> policy
+  // evaluation -> injection check -> approval -> execution.
+  // With no policy engine the registry is unguarded and
+  // Milestone 1-3 behaviour is preserved exactly.
+  const policyGate =
+    config.policy !== undefined
+      ? new DefaultPolicyGate({
+          policyEngine: config.policy,
+          approvalManager:
+            config.approval ?? new ApprovalManager(config.approvalHandler),
+          checkInjection: config.checkInjection ?? true,
+        })
+      : undefined;
+  const tools = new ToolRegistry(policyGate !== undefined ? { gate: policyGate } : {});
   tools.register(new CalculatorTool());
   tools.register(new WordCountTool());
 

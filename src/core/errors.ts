@@ -11,6 +11,7 @@ export type ErrorCode =
   | 'duplicate_tool'
   | 'tool_validation'
   | 'tool_execution'
+  | 'policy_denied'
   | 'run_not_found'
   | 'cancellation'
   | 'timeout'
@@ -119,6 +120,54 @@ export class ToolExecutionError extends DomainError {
   constructor(toolName: string, cause?: unknown) {
     const message = cause instanceof Error ? cause.message : String(cause);
     super('tool_execution', `Tool '${toolName}' failed: ${message}`, { cause });
+  }
+}
+
+/**
+ * A tool call was refused by the policy layer (Milestone 4).
+ *
+ * Thrown inside `ToolRegistry.execute()` when the injected
+ * policy gate denies a call, requires approval that was not
+ * granted, or blocks a prompt-injection payload. It surfaces
+ * through the normal `ToolCaller` flow as an `ok: false`
+ * result and is recorded as evidence, so a refusal is
+ * auditable rather than silent.
+ */
+export class PolicyDeniedError extends DomainError {
+  readonly policyDecision: string;
+  readonly refusalReason: string;
+  /**
+   * Policy/security decisions observed before the refusal.
+   * Carried so callers can record a complete audit trail even
+   * when execution was blocked.
+   */
+  readonly audits: readonly {
+    readonly tool: string;
+    readonly policyDecision: string;
+    readonly refusalReason?: string;
+    readonly safetyLevel?: string;
+    readonly explanation: string;
+  }[];
+
+  constructor(
+    toolName: string,
+    policyDecision: string,
+    refusalReason: string,
+    explanation: string,
+    audits: readonly {
+      readonly tool: string;
+      readonly policyDecision: string;
+      readonly refusalReason?: string;
+      readonly safetyLevel?: string;
+      readonly explanation: string;
+    }[] = [],
+  ) {
+    super('policy_denied', `Tool '${toolName}' refused by policy: ${explanation}`, {
+      details: { toolName, policyDecision, refusalReason },
+    });
+    this.policyDecision = policyDecision;
+    this.refusalReason = refusalReason;
+    this.audits = audits;
   }
 }
 

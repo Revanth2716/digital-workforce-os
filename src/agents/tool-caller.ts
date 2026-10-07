@@ -2,7 +2,7 @@ import type { Clock, RunId, TaskId } from '../core/types.js';
 import type { JsonValue } from '../core/json.js';
 import type { EvidenceLog } from '../events/evidence.js';
 import type { ToolRegistry } from '../tools/tool-registry.js';
-import { ToolExecutionError } from '../core/errors.js';
+import { PolicyDeniedError, ToolExecutionError } from '../core/errors.js';
 import type { ToolCallRequest, ToolCallResult } from './schemas.js';
 
 /** What a tool call needs from its executing task. */
@@ -77,8 +77,11 @@ export class ToolCaller {
         }
       }
       // The registry validates the arguments against the
-      // tool's declared input schema before executing.
-      const output = await this.tools.execute(
+      // tool's declared input schema, evaluates policy, checks for
+      // prompt injection and (when required) obtains human approval
+      // before executing. `executeWithAudit` additionally returns
+      // the decisions observed, so every call is auditable.
+      const { output, audits } = await this.tools.executeWithAudit(
         request.tool,
         request.arguments,
         {
@@ -86,6 +89,14 @@ export class ToolCaller {
           clock: context.clock,
         },
       );
+
+      // Record the policy decision(s) for this call — allowed ones
+      // included, so policy compliance can be evaluated from
+      // evidence rather than inferred.
+      for (const entry of audits) {
+        this.recordPolicyDecision(context, request.id, entry);
+      }
+
       result = {
         id: request.id,
         tool: request.tool,
@@ -94,6 +105,25 @@ export class ToolCaller {
         durationMs: context.clock.now() - startedAt,
       };
     } catch (error) {
+      // Milestone 4: a policy refusal (unknown tool, deny,
+      // missing/rejected approval, or a blocked prompt-injection
+      // payload) is recorded as its own evidence record so the
+      // reason, decision and source are auditable.
+      if (error instanceof PolicyDeniedError) {
+        for (const entry of error.audits) {
+          this.recordPolicyDecision(context, request.id, entry);
+        }
+        // Guarantee at least one decision is recorded even if the
+        // refusal carried no audit entries.
+        if (error.audits.length === 0) {
+          this.recordPolicyDecision(context, request.id, {
+            tool: request.tool,
+            policyDecision: error.policyDecision,
+            refusalReason: error.refusalReason,
+            explanation: error.message,
+          });
+        }
+      }
       result = {
         id: request.id,
         tool: request.tool,
@@ -118,6 +148,42 @@ export class ToolCaller {
     });
 
     return result;
+  }
+
+  /**
+   * Record one policy/security decision as evidence.
+   *
+   * Every decision the gate makes — ALLOW, DENY and
+   * REQUIRE_APPROVAL alike — is written to the append-only log,
+   * so evaluation can measure policy compliance from what
+   * actually happened rather than inferring it.
+   */
+  private recordPolicyDecision(
+    context: ToolCallContext,
+    callId: string,
+    entry: {
+      readonly tool: string;
+      readonly policyDecision: string;
+      readonly refusalReason?: string;
+      readonly safetyLevel?: string;
+      readonly explanation: string;
+    },
+  ): void {
+    context.evidence.record({
+      runId: context.runId,
+      taskId: context.taskId,
+      kind: 'tool.policy',
+      data: {
+        callId,
+        tool: entry.tool,
+        policyDecision: entry.policyDecision,
+        // A decision is allowed unless it carries a refusal reason.
+        allowed: entry.refusalReason === undefined,
+        refusalReason: entry.refusalReason ?? null,
+        safetyLevel: entry.safetyLevel ?? null,
+        explanation: entry.explanation,
+      },
+    });
   }
 
   /** Execute tool calls sequentially, honouring cancellation. */

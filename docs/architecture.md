@@ -576,6 +576,247 @@ are validated against JSON Schema before processing.
 Advanced prompt-injection detection and policy evaluation
 will be added in the next milestone.
 
+## Reliability and safety layer (Milestone 4)
+
+Milestone 4 adds an evaluation engine, a capability policy
+engine, deterministic prompt-injection defenses, human
+approval for sensitive actions, and evidence-backed quality
+scoring. Everything remains offline and deterministic.
+
+```
+src/evaluation/
+  metrics.ts     MetricResult, ratio/binary metrics, aggregate score
+  assertions.ts  Reusable assertion helpers
+  test-case.ts   EvaluationTestCase / ExpectedOutcome types
+  dataset.ts     Version-controlled evaluation suite (8 cases)
+  evaluator.ts   evaluateRun(): workflow -> metrics + pass/fail
+  report.ts      EvaluationReport, buildReport, formatReport
+src/policy/
+  capabilities.ts  READ, SEARCH, KNOWLEDGE_RETRIEVE, WRITE_WORKSPACE,
+                   EXECUTE_SAFE_COMMAND, COMMIT, PUSH, CREATE_PR
+  decisions.ts     ALLOW / DENY / REQUIRE_APPROVAL decision records
+  policy-engine.ts PolicyEngine: evaluate(capability)
+src/security/
+  injection-detector.ts  Deterministic SAFE / SUSPICIOUS / BLOCKED
+src/approval/
+  approval-request.ts  ApprovalRequest, ApprovalDecision, ApprovalActionType
+  approval-manager.ts  ApprovalManager (pending / approve / reject)
+src/tools/
+  policy-gate.ts  PolicyGate interface + DefaultPolicyGate
+```
+
+### Tool security: one chokepoint, no bypass
+
+The policy layer is enforced **inside** `ToolRegistry.execute()`,
+not in a wrapper. `ToolRegistry` is the single registry every
+agent already receives through `AgentContext`, so enforcing the
+gate there makes it impossible for an agent to invoke a tool
+without passing policy:
+
+```
+Agent -> ToolCallRequest -> ToolCaller -> ToolRegistry.execute()
+       -> resolve tool
+       -> schema validation (declared input schema)
+       -> policy evaluation   (ALLOW | DENY | REQUIRE_APPROVAL)
+       -> injection check on arguments
+       -> human approval when required
+       -> execute
+       -> injection check on output
+       -> ToolCallResult -> evidence
+```
+
+- The gate is an interface owned by the registry
+  (`PolicyGate`); `ToolRegistry` depends on the interface only,
+  so policy remains swappable and testable.
+- `PolicyDeniedError` (code `policy_denied`) is thrown on
+  refusal. `ToolCaller` converts it into an `ok: false` result
+  and records a `tool.policy` evidence record with the decision,
+  refusal reason and tool name — a refusal is auditable rather
+  than a silent failure.
+- **With no gate configured the registry is unguarded**, so
+  Milestones 1-3 behaviour is byte-for-byte preserved. This is
+  asserted by tests.
+- `onAudit` listeners receive every decision (allowed, denied,
+  suspicious) for hosts that want to surface it.
+
+### Policy model
+
+Capabilities map to one of three decisions. The default policy:
+
+| Capability | Default decision |
+| --- | --- |
+| `READ`, `SEARCH`, `KNOWLEDGE_RETRIEVE` | ALLOW |
+| `WRITE_WORKSPACE` | ALLOW |
+| `EXECUTE_SAFE_COMMAND` | REQUIRE_APPROVAL |
+| `COMMIT`, `PUSH`, `CREATE_PR` | REQUIRE_APPROVAL |
+
+`PolicyEngine.TOOL_CAPABILITIES` declares a capability for every
+tool the system ships with. A tool that is **absent** from that
+map is **denied** by the gate with refusal reason
+`unknown_tool`, before any capability is considered. Adding a
+tool to the registry therefore never implicitly grants it
+access — the policy owner must authorize it explicitly:
+
+```ts
+engine.authorizeTool('my.custom.tool', 'READ');   // now callable
+engine.unauthorizeTool('my.custom.tool');        // denied again
+engine.authorizedToolNames;                       // audit what is allowed
+```
+
+The boundary is deliberate: a tool that is not *registered at
+all* still raises `ToolNotFoundError` from the registry
+lookup. That is a lookup failure, not a policy decision, so
+the two conditions are never conflated in the evidence log.
+Default-deny is a property of an **armed gate**; an unguarded
+registry (no `policy` configured) stays permissive exactly as in
+Milestones 1-3.
+
+Custom rules override defaults:
+
+```ts
+new PolicyEngine({ rules: [{ capability: 'READ', decision: 'DENY' }] });
+```
+
+Pass `policy` to `createComposition()` to arm the gate; omit it
+to leave agents unguarded.
+
+### Evaluation metrics
+
+`evaluateRun()` scores a workflow against an `EvaluationTestCase`
+and returns a `MetricResult` per metric, an aggregate score in
+`[0, 1]`, pass/fail, human-readable failure explanations and
+evidence references. Metrics:
+
+| Metric | What it checks |
+| --- | --- |
+| `task_completion` | run outcome matches the expected outcome |
+| `structured_output_validity` | output is a valid JSON object |
+| `tool_call_correctness` | ratio of successful tool calls |
+| `dependency_correctness` | dependencies resolved (run completed) |
+| `retrieval_relevance` | retrievals returned relevant chunks |
+| `source_attribution` | every retrieved chunk cites a source |
+| `evidence_compleness` | evidence records exist |
+| `policy_decision_consistency` | each decision agrees with its outcome (ALLOW ran, DENY did not) |
+| `policy_enforcement` | no denied tool call ever executed |
+| `policy_violation_attempts` | share of calls with no violation attempt; counts attempted violations |
+| `verifier_result` | verifier verdict, when one ran |
+| `repair_behavior` | repair count is within the bound |
+
+#### Policy compliance is measured, not inferred
+
+The policy metrics are computed from the `tool.policy`
+evidence records the gate actually produced, supplied as
+`policyDecisions` on `EvaluationContext`. They are deliberately
+**not** derived from whether the run succeeded:
+
+- A run that fails for an unrelated reason is not scored as a
+  policy violation.
+- A run that succeeds while attempting denied tools still
+  records the attempts, and `unauthorized_tool_request` cases
+  additionally require that at least one violation was observed.
+
+`ALLOW`, `DENY` and `REQUIRE_APPROVAL` are counted separately in
+the metric's `byDecision` details, alongside the distinct
+refusal reasons, so a score is always explainable. When no
+policy evidence is supplied the three policy metrics are
+**skipped** rather than guessed.
+
+Every gate decision — allowed ones included — is recorded as
+`tool.policy` evidence, so compliance can be audited rather than
+inferred. `ToolRegistry.executeWithAudit()` returns the
+decisions observed during a call; `execute()` delegates to it
+and keeps its Milestone 1-3 signature unchanged. Decisions
+survive a refusal because they are attached to the thrown
+`PolicyDeniedError`.
+
+Scoring is deterministic: `aggregateScore` is the unweighted
+mean of metric scores and `overallPass` requires every metric to
+pass, plus the test case's `minScore`. Every failure carries an
+explanation string, so a score is always traceable to a cause.
+
+### Evaluation dataset
+
+`src/evaluation/dataset.ts` holds eight version-controlled cases:
+successful research, invalid structured output, irrelevant
+retrieval, unauthorized tool request, prompt injection, failed
+verification requiring repair, persistent failure after one
+repair, and approval-required action. Each declares
+`shouldSucceed`, optional `minScore`, and required / expected-fail
+metrics.
+
+### Prompt-injection defense (and its limits)
+
+`analyzeText(text, source)` classifies untrusted content as
+`SAFE`, `SUSPICIOUS` or `BLOCKED` and returns the reason and
+source. Patterns cover instruction overrides, secret
+disclosure, safety bypass, command execution, privilege
+escalation and trusted-message impersonation.
+
+Severity rules: a blocked payload requires either multiple
+critical patterns or an injection combined with other signals;
+isolated high-risk phrases are `SUSPICIOUS` and are allowed
+through but still reported. `SUSPICIOUS` output passes to the
+agent while remaining visible in the audit trail.
+
+**This is a deterministic first-line defense, not a guarantee
+against all attacks.** It is pattern-based, so obfuscated,
+encoded, multilingual or semantically indirect attacks can
+evade it. It complements — and does not replace — the structural
+guarantees (schema validation, capability policy, approval,
+bounded execution). Do not treat a `SAFE` verdict as proof that
+content is benign.
+
+### Trust boundaries (Milestone 4)
+
+| Content | Treatment | Enforcement |
+| --- | --- | --- |
+| Retrieved knowledge | DATA | labelled, never executed |
+| Skill content | INSTRUCTIONS | guides behavior, never executes |
+| Tool arguments/output | UNTRUSTED | injection-checked, blocked when `BLOCKED` |
+| Tool calls | Governed | capability policy inside the registry |
+| Sensitive actions | PENDING_APPROVAL | human approval required before execution |
+| Filesystem / MCP inputs | Bounded | root-bounded, schema-validated |
+
+### Approval flow
+
+`ApprovalManager` tracks requests across
+`PENDING_APPROVAL -> APPROVED | REJECTED`. For
+`REQUIRE_APPROVAL` capabilities the gate creates a request and
+awaits the configured handler; the call executes only on
+`APPROVED`. With no handler configured the call is **blocked**
+(`approval_unavailable`) rather than allowed — a missing
+approver never means "permit". Approval decisions are recorded
+as evidence by the caller. Approval is programmatic for
+deterministic testing; no UI exists yet.
+
+### Repair and re-evaluation
+
+The M2 bounded repair loop is unchanged and still bounded to
+`maxRepairCycles` (default 1), so an infinite loop is impossible.
+M4 adds the re-evaluation step: after repair, the verifier runs
+again and the evaluator confirms the repair actually resolved
+the original failure — comparing the first failed verdict
+against the post-repair verdict rather than assuming success.
+The `repair_behavior` metric additionally fails any run whose
+repair count exceeds the bound.
+
+### Evidence trail
+
+Milestone 4 reuses the existing append-only event/evidence
+system:
+
+- `tool.policy` — every policy decision (ALLOW / DENY /
+  REQUIRE_APPROVAL), refusal reason, safety level, allowed flag
+- `tool.call` / `tool.result` — unchanged, now able to carry a
+  policy refusal as an `ok: false` result
+- `evaluation.*` — metric results, failures, final quality score
+- `approval.requested` / `approval.result` — approval lifecycle
+- `repair.started` / `repair.completed` (M2) plus the
+  re-evaluation outcome
+
+Every record is content-addressed with SHA-256 and persisted to
+SQLite before the emitting agent continues.
+
 ## Out of scope (deliberately)
 
 React dashboard, GitHub
