@@ -3,6 +3,8 @@ import type { JsonValue } from '../core/json.js';
 import type { ToolRegistry } from '../tools/tool-registry.js';
 import type { EvidenceLog } from '../events/evidence.js';
 import type { ModelInfo } from '../providers/llm-provider.js';
+import type { InjectedSkill } from '../skills/skill.js';
+import type { RetrievalResult } from '../knowledge/retriever.js';
 
 /** Everything an agent needs to execute a single task attempt. */
 export interface AgentContext {
@@ -29,6 +31,20 @@ export interface AgentContext {
   readonly availableTools?: readonly string[];
   /** Provider/model metadata for the LLM backing the executing agent. */
   readonly model?: ModelInfo;
+  // ---- Milestone 3: RAG + Skills ----
+  /**
+   * Retrieved knowledge chunks for this task. Treated as DATA —
+   * never as executable instructions. Populated by the AI
+   * workflow when a knowledge store is configured.
+   */
+  readonly knowledgeContext?: RetrievalResult;
+  /**
+   * Selected skills for this task. Treated as INSTRUCTIONS —
+   * they guide agent behavior but never execute arbitrary
+   * commands. Populated by the AI workflow when skills are
+   * configured.
+   */
+  readonly skillContext?: readonly InjectedSkill[];
 }
 
 /** What an agent produces for a successful execution. */

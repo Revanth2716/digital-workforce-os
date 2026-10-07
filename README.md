@@ -8,7 +8,9 @@ log. Milestone 2 turned it into a real AI-agent execution
 layer: an LLM provider abstraction, Zod structured
 outputs, a planner, specialist agents (researcher,
 builder, verifier), structured tool calling, and a
-bounded repair cycle.
+bounded repair cycle. Milestone 3 added three AI Engineer
+capabilities: local RAG / knowledge retrieval, real MCP
+integration, and reusable agent Skills.
 
 - **Completely free to develop, test and run** — no
   API keys, no paid AI APIs, no cloud services. The
@@ -33,7 +35,18 @@ bounded repair cycle.
   event persisted to an append-only SQLite table;
   evidence records (agent lifecycle, model calls,
   structured validation, tool calls, verification,
-  repairs) are content-addressed with SHA-256.
+  repairs, knowledge retrieval, skill selection) are
+  content-addressed with SHA-256.
+- **Knowledge-aware (M3)** — local RAG retrieval with
+  deterministic TF-IDF ranking, source attribution,
+  and grounded context construction. Retrieved content
+  is always treated as DATA, never as instructions.
+- **MCP-integrated (M3)** — a real stdio MCP server
+  using the official TypeScript SDK, exposing safe
+  read-only tools that reuse the existing ToolRegistry.
+- **Skill-driven (M3)** — version-controlled Markdown
+  skills with discovery, metadata parsing, deterministic
+  selection, and injection into agent contexts.
 
 ## Requirements
 
@@ -44,7 +57,7 @@ bounded repair cycle.
 
 ```sh
 pnpm install
-pnpm test        # vitest — 197 tests (90 M1 + 107 M2)
+pnpm test        # vitest — 270 tests (90 M1 + 107 M2 + 73 M3)
 pnpm typecheck   # tsc --noEmit
 pnpm demo        # M1: research -> implementation -> verification
 pnpm demo:ai     # M2: planner -> researcher -> builder -> verifier (with repair)
@@ -108,17 +121,26 @@ src/
   providers/    Provider interface, deterministic provider,
                 LLMProvider interface, deterministic LLM adapter,
                 optional OpenAI-compatible provider
+  knowledge/    RAG: document, chunker, inverted index, retriever,
+                knowledge store, context builder
+  skills/       Skill types, loader (discovery + parsing), selector
+  mcp/          MCP tools, stdio server, client
   index.ts      composition root
   cli.ts        demo CLI (graph demo + AI demo)
-tests/          197 unit + integration tests
-docs/           architecture.md
+skills/           Version-controlled Markdown skills
+  repository-analysis/SKILL.md
+  safe-code-change/SKILL.md
+  verification/SKILL.md
+tests/            270 unit + integration tests
+docs/             architecture.md
 ```
 
 See [docs/architecture.md](docs/architecture.md) for
 module boundaries, dependency inversion, the LLM
 provider layer, structured outputs, agent roles, the
-tool execution flow, the repair loop, and provider
-neutrality.
+tool execution flow, the repair loop, provider
+neutrality, RAG architecture, MCP architecture, skills
+architecture, and trust boundaries.
 
 ## License
 

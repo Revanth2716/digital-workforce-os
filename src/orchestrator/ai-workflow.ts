@@ -19,6 +19,10 @@ import {
   VerificationResultSchema,
   validateStructured,
 } from '../agents/schemas.js';
+import type { KnowledgeStore } from '../knowledge/knowledge-store.js';
+import type { Skill } from '../skills/skill.js';
+import { selectSkills } from '../skills/skill-selector.js';
+import { buildRetrievalEvidence } from '../knowledge/context-builder.js';
 
 /** Capability each specialist agent advertises. */
 const AGENT_CAPABILITIES: Readonly<Record<string, string>> = {
@@ -86,11 +90,19 @@ export interface AIWorkflowDeps {
   readonly tasks: TaskRepository;
   readonly evidence: EvidenceLog;
   readonly llm: LLMProvider;
+  /** Milestone 3: knowledge store for RAG retrieval. */
+  readonly knowledgeStore?: KnowledgeStore;
+  /** Milestone 3: available skills for selection. */
+  readonly skills?: readonly Skill[];
   readonly options?: {
     /** Maximum automatic repair cycles. Defaults to 1 — never infinite. */
     readonly maxRepairCycles?: number;
     /** Concurrency passed to the orchestrator. Defaults to 1. */
     readonly concurrency?: number;
+    /** Milestone 3: number of knowledge chunks to retrieve. Defaults to 3. */
+    readonly knowledgeTopK?: number;
+    /** Milestone 3: number of skills to select. Defaults to 2. */
+    readonly skillTopK?: number;
   };
 }
 
@@ -322,19 +334,106 @@ export class AIWorkflow {
         failFast: true,
         // Enrich the plain agent context with the AI layer's
         // per-run state: objective, previous results, available
-        // tools and provider/model metadata.
-        agentContextFactory: (base: AgentContext, task) => ({
-          ...base,
-          objective,
-          previousResults: [...results.values()],
-          availableTools: this.deps.tools.list().map((tool) => tool.name),
-          model: this.deps.llm.model,
-        }),
+        // tools, provider/model metadata, knowledge context (RAG),
+        // and skill context.
+        agentContextFactory: (base: AgentContext, task) => {
+          const knowledgeContext = this.retrieveKnowledge(objective, task);
+          const skillContext = this.selectSkillContext(objective, task);
+          return {
+            ...base,
+            objective,
+            previousResults: [...results.values()],
+            availableTools: this.deps.tools.list().map((tool) => tool.name),
+            model: this.deps.llm.model,
+            knowledgeContext,
+            skillContext,
+          };
+        },
       },
     });
     const handle = orchestrator.start(graph, runName);
     activeRuns.add(handle.runId);
     return handle.promise;
+  }
+
+  /**
+   * Retrieve relevant knowledge chunks for a task.
+   * Records retrieval evidence (query, chunks, scores, sources).
+   */
+  private retrieveKnowledge(
+    objective: string,
+    task: { readonly input?: JsonValue },
+  ) {
+    if (this.deps.knowledgeStore === undefined) return undefined;
+
+    const taskInput = task.input;
+    const taskDescription =
+      isJsonObject(taskInput) && typeof taskInput['description'] === 'string'
+        ? taskInput['description']
+        : objective;
+
+    const query = `${objective} ${taskDescription}`;
+    const topK = this.deps.options?.knowledgeTopK ?? 3;
+    const retrieval = this.deps.knowledgeStore.retrieve(query, topK);
+
+    // Record retrieval evidence.
+    const evidence = buildRetrievalEvidence(query, retrieval.chunks);
+    this.deps.evidence.record({
+      runId: this.deps.ids.runId(),
+      kind: 'knowledge.retrieval',
+      data: {
+        query: evidence.query,
+        chunkIds: [...evidence.chunkIds],
+        sources: [...evidence.sources],
+        scores: [...evidence.scores],
+        totalCandidates: retrieval.totalCandidates,
+      },
+    });
+
+    return retrieval;
+  }
+
+  /**
+   * Select relevant skills for a task.
+   * Records skill selection evidence.
+   */
+  private selectSkillContext(
+    objective: string,
+    task: { readonly input?: JsonValue },
+  ) {
+    if (this.deps.skills === undefined || this.deps.skills.length === 0) return undefined;
+
+    const taskInput = task.input;
+    const taskDescription =
+      isJsonObject(taskInput) && typeof taskInput['description'] === 'string'
+        ? taskInput['description']
+        : objective;
+
+    const query = `${objective} ${taskDescription}`;
+    const topK = this.deps.options?.skillTopK ?? 2;
+    const selected = selectSkills(this.deps.skills, query, { topK });
+
+    if (selected.length === 0) return undefined;
+
+    // Record skill selection evidence.
+    this.deps.evidence.record({
+      runId: this.deps.ids.runId(),
+      kind: 'skill.selected',
+      data: {
+        query,
+        selectedSkills: selected.map((s) => ({
+          skillId: s.skill.id,
+          name: s.skill.metadata.name,
+          score: s.score,
+        })),
+      },
+    });
+
+    return selected.map((s) => ({
+      skillId: s.skill.id,
+      name: s.skill.metadata.name,
+      instructions: s.skill.instructions,
+    }));
   }
 
   /** Convert a validated plan into an executable task graph. */

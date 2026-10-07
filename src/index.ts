@@ -38,6 +38,9 @@ export * from './providers/openai-compatible-provider.js';
 export * from './orchestrator/orchestrator.js';
 export * from './orchestrator/ai-workflow.js';
 export * from './orchestrator/ai-demo.js';
+export * from './knowledge/index.js';
+export * from './skills/index.js';
+export * from './mcp/index.js';
 
 import { AppDatabase } from './persistence/database.js';
 import { RunRepository } from './persistence/run-repository.js';
@@ -62,6 +65,9 @@ import { AIWorkflow } from './orchestrator/ai-workflow.js';
 import { Orchestrator } from './orchestrator/orchestrator.js';
 import { Clock, IdGenerator, RandomIdGenerator, SystemClock } from './core/types.js';
 import type { JsonValue } from './core/json.js';
+import { KnowledgeStore } from './knowledge/knowledge-store.js';
+import { loadSkills } from './skills/skill-loader.js';
+import type { Skill } from './skills/skill.js';
 
 /** Configuration for the default composition. */
 export interface CompositionConfig {
@@ -90,6 +96,22 @@ export interface CompositionConfig {
   readonly llmResponses?: Readonly<Record<string, JsonValue>>;
   /** Maximum automatic AI workflow repair cycles. Defaults to 1. */
   readonly maxRepairCycles?: number;
+  /**
+   * Milestone 3: knowledge store for RAG retrieval. If not
+   * provided, a default store is created and pre-populated
+   * with project documentation.
+   */
+  readonly knowledgeStore?: KnowledgeStore;
+  /**
+   * Milestone 3: skills directory path. If provided, skills
+   * are loaded from this directory and made available to the
+   * AI workflow for selection.
+   */
+  readonly skillsDir?: string;
+  /** Milestone 3: number of knowledge chunks to retrieve. Defaults to 3. */
+  readonly knowledgeTopK?: number;
+  /** Milestone 3: number of skills to select. Defaults to 2. */
+  readonly skillTopK?: number;
 }
 
 /** All wired modules, ready to use. */
@@ -105,6 +127,10 @@ export interface Composition {
   readonly llm: LLMProvider;
   /** Milestone 2 AI workflow (planner -> specialists -> verifier). */
   readonly ai: AIWorkflow;
+  /** Milestone 3: knowledge store for RAG retrieval. */
+  readonly knowledgeStore: KnowledgeStore;
+  /** Milestone 3: loaded skills. */
+  readonly skills: readonly Skill[];
   readonly evidence: EvidenceLog;
   readonly runs: RunRepository;
   readonly tasks: TaskRepository;
@@ -176,6 +202,10 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     },
   });
 
+  // Milestone 3: knowledge store and skills.
+  const knowledgeStore = config.knowledgeStore ?? new KnowledgeStore();
+  const skills = config.skillsDir !== undefined ? loadSkills(config.skillsDir) : [];
+
   const ai = new AIWorkflow({
     agents,
     tools,
@@ -186,9 +216,13 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     tasks,
     evidence,
     llm,
+    knowledgeStore,
+    skills,
     options: {
       concurrency: config.concurrency,
       maxRepairCycles: config.maxRepairCycles,
+      knowledgeTopK: config.knowledgeTopK,
+      skillTopK: config.skillTopK,
     },
   });
 
@@ -201,6 +235,8 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     provider,
     llm,
     ai,
+    knowledgeStore,
+    skills,
     evidence,
     runs,
     tasks,
