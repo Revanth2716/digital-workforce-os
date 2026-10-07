@@ -1,0 +1,12 @@
+# pnpm settings (pnpm 11+ reads configuration from this file)
+
+# Dependencies whose postinstall build scripts are allowed to run
+# (they compile/download native binaries).
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
+
+# Explicit per-package build approval (pnpm 11+).
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
