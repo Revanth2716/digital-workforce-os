@@ -26,7 +26,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify:persistence": "node scripts/verify-persistence.mjs",
-    "verify": "pnpm typecheck && pnpm test && pnpm demo"
+    "verify": "pnpm typecheck && pnpm test && pnpm demo",
+    "demo:final": "tsx src/orchestrator/final-demo.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.3",

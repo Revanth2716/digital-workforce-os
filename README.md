@@ -87,6 +87,17 @@ that API.
   the agent pipeline, event timeline, evidence, evaluation,
   metrics and approvals. Two runtime dependencies, system fonts,
   no analytics: it makes zero external requests.
+- **Git/GitHub (M5-C)** — safe workspace-bounded Git service
+  through the governed path; optional GitHub CLI adapter (honest
+  about availability) and deterministic SIMULATED GitHub
+  integration with SHA-256-derived IDs always labelled
+  `SIMULATED`. No external network access in deterministic mode.
+- **Final deterministic demo (M5-C)** — end-to-end sequence
+  from Planner → RAG → Skill → Researcher → MCP → Builder →
+  Verifier FAIL → Repair → Verifier PASS → Evaluation PASS →
+  Policy → Approval REQUIRED → Approval APPROVED → Git PASS →
+  GitHub SIMULATED → Evidence PASS, all orchestrated by
+  `pnpm demo:final` with zero network, zero API keys.
 
 ## Requirements
 
@@ -97,11 +108,12 @@ that API.
 
 ```sh
 pnpm install
-pnpm test        # backend vitest — 481 tests
+pnpm test        # backend vitest — 512 tests
 pnpm typecheck   # tsc --noEmit
 pnpm demo        # M1: research -> implementation -> verification
 pnpm demo:ai     # M2: planner -> researcher -> builder -> verifier (with repair)
 pnpm demo:safety # M4: evaluation, policy, approval, injection defense
+pnpm demo:final  # M5-C: final deterministic end-to-end portfolio demo
 pnpm api         # M5-A: local REST API on http://127.0.0.1:4317
 pnpm smoke:api   # M5-A: end-to-end API smoke test (offline)
 pnpm dashboard   # M5-B: dashboard dev server on http://127.0.0.1:5173

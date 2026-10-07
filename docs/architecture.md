@@ -573,10 +573,121 @@ recording. File access remains bounded by the existing
 architecture (rooted at a configurable directory). MCP inputs
 are validated against JSON Schema before processing.
 
-Advanced prompt-injection detection and policy evaluation
-will be added in the next milestone.
+## Git / GitHub integration (Milestone 5-C)
+
+**Git service** — `GitService` wraps the `git` CLI with two invariants:
+1. **Workspace containment** — every command validates paths through
+   `WorkspaceGuard` (lexical resolution, no symlink following, NUL-byte
+   rejection). Commands that escape the workspace are rejected before git
+   runs.
+2. **No silent failure** — a failed command throws `GitError` with exit
+   code and stderr; callers can never mistake failure for success.
+
+Git tools are exposed as `Tool` implementations (`git.status`, `git.diff`,
+`git.log`, `git.current_branch`, `git.create_branch`, `git.prepare_commit`,
+`git.execute_commit`) so they flow through the existing
+`ToolRegistry → PolicyGate → Approval` path. Read-only operations map to
+`READ`; `git.create_branch` maps to `WRITE_WORKSPACE`; `git.commit` maps
+to `COMMIT` and therefore always requires human approval.
+
+**GitHub adapter** — `GithubAdapter` talks to the real GitHub CLI (`gh`)
+only when it is present and authenticated. It never fabricates success:
+when `gh` is missing or unauthenticated it reports `available: false` with an
+explanatory reason. Every result carries an explicit `mode` of `'live'` or
+`'unavailable'`.
+
+**GitHub simulation** — `GithubSimulator` produces deterministic,
+clearly labelled `SIMULATED` results with no network access. SHA-256-derived
+IDs (`simulatedId`) ensure the same inputs always produce the same outputs.
+All results are labelled `label: 'SIMULATED'` and carry
+`mode: 'simulated'` in the evidence record so they can never be mistaken
+for live GitHub state. URLs use `.invalid` TLD so they can never be routed
+to a real GitHub host.
+
+```mermaid
+flowchart TD
+    subgraph Governed pipeline
+        A[Agent] -->|ToolCallRequest| B[ToolRegistry]
+        B -->|schema validation| C[PolicyGate]
+        C -->|ALLOW / DENY / REQUIRE_APPROVAL| D[ApprovalManager]
+        D -->|APPROVED| E[GitService / GithubAdapter / GithubSimulator]
+        E -->|evidence.recorded| F[EvidenceLog]
+    end
+
+    style Governed pipeline fill:#f9f9f9,stroke:#333,stroke-width:1px
+    style F fill:#e8f4fd,stroke:#333,stroke-width:0.5px
+
+    %% Live path
+    G[GithubAdapter] -- gh present + auth -->|mode: live| H[Real GitHub]
+    %% Simulation path
+    I[GithubSimulator] -->|label: SIMULATED| J[Evidence]
+    %% Git path
+    K[GitService] -- workspace-bound -->|real git CLI| L[Repo]
+```
+
+**Policy model** — The default policy (see `docs/architecture.md#policy-model`)
+maps capabilities to decisions:
+
+| Capability | Default decision |
+|---|---|
+| `READ`, `SEARCH`, `KNOWLEDGE_RETRIEVE` | ALLOW |
+| `WRITE_WORKSPACE` | ALLOW |
+| `EXECUTE_SAFE_COMMAND` | REQUIRE_APPROVAL |
+| `COMMIT`, `PUSH`, `CREATE_PR` | REQUIRE_APPROVAL |
+
+Custom rules override defaults. The policy engine is armed by passing
+`policy: new PolicyEngine()` to `createComposition()`; omitting it leaves
+the registry unguarded (M1–M3 behaviour).
+
+**Trust boundaries** — Retrieved knowledge is treated as `DATA`; skill
+content is `INSTRUCTIONS`; tool calls always pass through the
+`ToolRegistry` with capability validation and evidence recording; sensitive
+Git actions (`commit`, `push`, `create-pr`) require `REQUIRE_APPROVAL`
+and are gated by the `ApprovalManager`.
+
+### Prompt-injection defense (Milestone 5-C boundary)
+
+The pattern-based detector (`analyzeText`) classifies untrusted content as
+`SAFE`, `SUSPICIOUS`, or `BLOCKED`. This is a deterministic first-line
+defense, NOT a guarantee against all attacks. It is pattern-based, so
+obfuscated, encoded, multilingual or semantically indirect attacks can
+evade it. It complements — and does not replace — the structural guarantees
+(schema validation, capability policy, approval, bounded execution).
+
+```
+SUSPICIOUS  → passes to agent, reported in audit trail
+BLOCKED     → rejected, never executed
+SAFE        → no patterns matched
+```
 
 ## Reliability and safety layer (Milestone 4)
+
+Milestone 4 adds an evaluation engine, a capability policy engine,
+deterministic prompt-injection defenses, human approval for sensitive
+actions, and evidence-backed quality scoring. Everything remains offline
+and deterministic.
+
+```
+src/evaluation/
+  metrics.ts     MetricResult, ratio/binary metrics, aggregate score
+  assertions.ts  Reusable assertion helpers
+  test-case.ts   EvaluationTestCase / ExpectedOutcome types
+  dataset.ts     Version-controlled evaluation suite (8 cases)
+  evaluator.ts   evaluateRun(): workflow -> metrics + pass/fail
+  report.ts      EvaluationReport, buildReport, formatReport
+src/policy/
+  capabilities.ts  READ, SEARCH, KNOWLEDGE_RETRIEVE, WRITE_WORKSPACE,
+                   EXECUTE_SAFE_COMMAND, COMMIT, PUSH, CREATE_PR
+  decisions.ts     ALLOW / DENY / REQUIRE_APPROVAL decision records
+  policy-engine.ts PolicyEngine: evaluate(capability)
+src/security/
+  injection-detector.ts  Deterministic SAFE / SUSPICIOUS / BLOCKED
+src/approval/
+  approval-request.ts  ApprovalRequest, ApprovalDecision, ApprovalActionType
+  approval-manager.ts  ApprovalManager (pending / approve / reject)
+src/tools/
+  policy-gate.ts  PolicyGate interface + DefaultPolicyGate
+```
 
 Milestone 4 adds an evaluation engine, a capability policy
 engine, deterministic prompt-injection defenses, human

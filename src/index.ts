@@ -51,6 +51,8 @@ export * from './observability/index.js';
 export * from './application/index.js';
 export * from './persistence/observability-repository.js';
 export * from './api/index.js';
+export * from './git/index.js';
+export * from './github/index.js';
 
 import { AppDatabase } from './persistence/database.js';
 import { RunRepository } from './persistence/run-repository.js';
@@ -86,6 +88,11 @@ import { ObservabilityRepository } from './persistence/observability-repository.
 import { LocalTracer } from './observability/tracer.js';
 import { instrument } from './observability/instrumentation.js';
 import type { InstrumentationHandle } from './observability/instrumentation.js';
+import { GitService } from './git/git-service.js';
+import { WorkspaceGuard } from './git/workspace.js';
+import { registerGitTools } from './git/git-tools.js';
+import { GithubAdapter } from './github/github-adapter.js';
+import { GithubSimulator } from './github/github-simulation.js';
 import { RunService } from './application/run-service.js';
 import { WorkflowService } from './application/workflow-service.js';
 import { ApprovalService } from './application/approval-service.js';
@@ -148,6 +155,12 @@ export interface CompositionConfig {
   readonly approvalHandler?: ApprovalHandler;
   /** Milestone 4: run prompt-injection checks on tool input/output. Defaults to true. */
   readonly checkInjection?: boolean;
+  /**
+   * Milestone 5-C: filesystem workspace root for GitService-backed
+   * tools. When provided, the Git tools are registered on the
+   * shared ToolRegistry and therefore pass through the gate.
+   */
+  readonly gitWorkspaceRoot?: string;
 }
 
 /** All wired modules, ready to use. */
@@ -182,6 +195,15 @@ export interface Composition {
   readonly workflowService: WorkflowService;
   readonly approvalService: ApprovalService;
   readonly evaluationService: EvaluationService;
+  /**
+   * Milestone 5-C: safe Git service bound to `gitWorkspaceRoot`.
+   * Present only when `gitWorkspaceRoot` is configured.
+   */
+  readonly gitService?: GitService;
+  /** Milestone 5-C: GitHub adapter (live) and simulation pair. */
+  readonly githubAdapter: GithubAdapter;
+  /** Milestone 5-C: deterministic GitHub simulator. */
+  readonly githubSimulator: GithubSimulator;
   close(): void;
 }
 
@@ -268,6 +290,23 @@ export function createComposition(config: CompositionConfig = {}): Composition {
   const knowledgeStore = config.knowledgeStore ?? new KnowledgeStore();
   const skills = config.skillsDir !== undefined ? loadSkills(config.skillsDir) : [];
 
+  // Milestone 5-C: optional safe Git service. When configured it
+  // registers tools on the same registry, so agent-issued Git
+  // operations pass through the PolicyGate and ApprovalManager.
+  let gitService: GitService | undefined;
+  if (config.gitWorkspaceRoot !== undefined) {
+    gitService = new GitService({ guard: new WorkspaceGuard({ root: config.gitWorkspaceRoot }) });
+    registerGitTools(tools, gitService);
+  }
+
+  const githubWorkspaceRoot = config.gitWorkspaceRoot ?? process.cwd();
+  const githubAdapter = new GithubAdapter({ cwd: githubWorkspaceRoot });
+  const githubSimulator = new GithubSimulator({
+    clock,
+    adapter: githubAdapter,
+    evidence,
+  });
+
   const ai = new AIWorkflow({
     agents,
     tools,
@@ -349,6 +388,9 @@ export function createComposition(config: CompositionConfig = {}): Composition {
     workflowService,
     approvalService,
     evaluationService,
+    ...(gitService !== undefined ? { gitService } : {}),
+    githubAdapter,
+    githubSimulator,
     close: () => {
       instrumentation.dispose();
       db.close();

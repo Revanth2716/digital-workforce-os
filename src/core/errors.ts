@@ -12,6 +12,8 @@ export type ErrorCode =
   | 'tool_validation'
   | 'tool_execution'
   | 'policy_denied'
+  | 'git_unavailable'
+  | 'git_failed'
   | 'run_not_found'
   | 'cancellation'
   | 'timeout'

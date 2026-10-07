@@ -120,7 +120,15 @@ export class PolicyEngine {
     'file.write': 'WRITE_WORKSPACE',
     // Execution tools
     'command.execute': 'EXECUTE_SAFE_COMMAND',
-    // Git tools
+    // Git tools (Milestone 5-C). Read-only inspection is ALLOW;
+    // anything that mutates the repository or its history is
+    // either workspace-scoped or requires human approval.
+    'git.status': 'READ',
+    'git.diff': 'READ',
+    'git.log': 'READ',
+    'git.current_branch': 'READ',
+    'git.create_branch': 'WRITE_WORKSPACE',
+    'git.prepare_commit': 'WRITE_WORKSPACE',
     'git.commit': 'COMMIT',
     'git.push': 'PUSH',
     'pr.create': 'CREATE_PR',
